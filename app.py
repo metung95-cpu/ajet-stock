@@ -21,11 +21,12 @@ def login_check(username, password):
     else:
         st.error("아이디 또는 비밀번호를 확인하세요.")
 
+# 로그인 화면 (미리보기 글자 삭제 완료)
 if not st.session_state['logged_in']:
     st.title("🔒 에이젯 재고관리 로그인")
-    col1, col2 = st.columns(2)
-    input_id = st.text_input("아이디", placeholder="AZ")
-    input_pw = st.text_input("비밀번호", type="password", placeholder="5835")
+    input_id = st.text_input("아이디")
+    input_pw = st.text_input("비밀번호", type="password")
+    
     if st.button("로그인", type="primary", use_container_width=True):
         login_check(input_id, input_pw)
     st.stop()
@@ -35,9 +36,6 @@ if not st.session_state['logged_in']:
 def load_google_sheet_data():
     try:
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-        
-        # [변경점] 파일(key.json) 대신 스트림릿의 '비밀 금고(Secrets)'에서 정보를 가져옵니다.
-        # 이렇게 해야 해킹 당하지 않습니다.
         creds_dict = st.secrets["gcp_service_account"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
@@ -65,11 +63,13 @@ st.caption(f"최근 조회: {datetime.now().strftime('%H:%M:%S')}")
 
 df = load_google_sheet_data()
 
+# 5. 검색 및 표 출력 (검색창 추가 완료)
 if not df.empty:
     search_item = st.text_input("🔍 품명 검색", placeholder="예: 목살, 삼겹")
     filtered_df = df.copy()
     
     if search_item:
+        # '품명' 열에서 검색어가 포함된 데이터만 필터링
         filtered_df = filtered_df[filtered_df['품명'].astype(str).str.contains(search_item)]
 
     st.divider()
