@@ -3,13 +3,14 @@ import pandas as pd
 from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import json
 
 # ------------------------------------------------------------------
-# 1. 기본 설정 및 CSS (글자 짤림 방지 + 줄바꿈 완벽 적용)
+# 1. 기본 설정 및 CSS
 # ------------------------------------------------------------------
 st.set_page_config(page_title="에이젯 재고관리", page_icon="🥩", layout="wide")
 
-# [핵심] 드롭다운 스타일링: 글자가 길어도 짤리지 않고 줄바꿈됨
+# 드롭다운 스타일링
 st.markdown("""
     <style>
         div[data-baseweb="select"] > div {
@@ -85,7 +86,6 @@ def load_google_sheet_data():
             df = df[df['품명'].astype(str).str.strip() != '']
 
         df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
-        
         return df
     except Exception as e:
         st.error(f"데이터 로드 오류: {e}")
@@ -164,7 +164,7 @@ if not df.empty:
         st.warning(f"표시할 데이터 컬럼을 찾을 수 없습니다.")
 
     # ------------------------------------------------------------------
-    # 5. [추가 기능] 출고 등록 (AZS 전용) - 200 에러 및 서식 완벽 대응
+    # 5. [추가 기능] 출고 등록 (AZS 전용) - values_update 사용
     # ------------------------------------------------------------------
     if current_user == "AZS":
         st.divider()
@@ -190,7 +190,6 @@ if not df.empty:
                 target_df = target_df.copy()
                 target_df['BL넘버'] = '-'
                 
-            # 드롭다운 포맷
             select_options = target_df.apply(
                 lambda x: f"{x['브랜드']} {x['품명']} {x['창고명']} {x['BL넘버']}", axis=1
             )
@@ -245,39 +244,38 @@ if not df.empty:
                         if target_row_idx != -1:
                             transfer_text = "이체" if input_transfer else ""
                             
-                            # [핵심] 안전한 데이터 변환 (200 에러 원천 차단)
-                            # 숫자는 무조건 int()로, 문자는 str()로, 콤마 등은 제거
+                            # 데이터 안전 변환
                             try:
-                                # 콤마나 소수점이 있을 경우를 대비한 안전한 정수 변환
                                 safe_qty = int(float(str(input_qty).replace(',', '')))
                             except:
                                 safe_qty = 0
-                                
                             try:
                                 safe_price = int(float(str(input_price).replace(',', '')))
                             except:
                                 safe_price = 0
 
-                            # 구글이 좋아하는 깨끗한 리스트 만들기
                             update_data = [
                                 str(input_manager),                     
                                 str(input_client),                      
                                 str(selected_row['품명']),               
                                 str(selected_row['브랜드']),             
                                 str(selected_row.get('BL넘버', '-')),    
-                                safe_qty,   # 깨끗한 int                  
+                                safe_qty,                  
                                 str(input_warehouse),                   
-                                safe_price, # 깨끗한 int                  
+                                safe_price,                 
                                 str(transfer_text)                      
                             ]
                             
                             rng = f"D{target_row_idx}:L{target_row_idx}"
                             
-                            # [핵심] USER_ENTERED 옵션 사용 (서식 자동 적용)
-                            sheet_out.update(
-                                range_name=rng, 
-                                values=[update_data], 
-                                value_input_option='USER_ENTERED'
+                            # [핵심 변경] values_update 사용 (버전 호환성 문제 해결)
+                            # update() 대신 이 함수를 쓰면 200 에러를 피할 수 있습니다.
+                            body = {'values': [update_data]}
+                            
+                            sheet_out.values_update(
+                                range_name=rng,
+                                params={'valueInputOption': 'USER_ENTERED'},
+                                body=body
                             )
                             
                             st.success(f"✅ {target_date_str} / {target_row_idx}행에 등록되었습니다!")
@@ -286,7 +284,14 @@ if not df.empty:
                             st.info("💡 팁: 운영부에 해당 날짜의 빈 행을 추가해달라고 요청하세요.")
                             
                     except Exception as e:
-                        st.error(f"오류 발생: {e}")
+                        # [디버깅] 에러 상세 내용 출력
+                        st.error("🚫 등록 중 오류가 발생했습니다.")
+                        st.write(f"**오류 메시지:** {e}")
+                        
+                        # 혹시 200 에러 안에 숨겨진 내용이 있다면 보여줍니다.
+                        if hasattr(e, 'response') and hasattr(e.response, 'text'):
+                            with st.expander("🔍 상세 오류 내용 (클릭해서 확인)"):
+                                st.code(e.response.text)
         else:
             st.warning("검색 조건에 맞는 재고가 없습니다.")
 else:
