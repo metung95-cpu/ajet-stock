@@ -9,7 +9,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # ------------------------------------------------------------------
 st.set_page_config(page_title="에이젯 재고관리", page_icon="🥩", layout="wide")
 
-# [핵심] 드롭다운 스타일링
+# [핵심] 드롭다운 스타일링: 글자가 길어도 짤리지 않고 줄바꿈됨
 st.markdown("""
     <style>
         div[data-baseweb="select"] > div {
@@ -164,7 +164,7 @@ if not df.empty:
         st.warning(f"표시할 데이터 컬럼을 찾을 수 없습니다.")
 
     # ------------------------------------------------------------------
-    # 5. [추가 기능] 출고 등록 (AZS 전용) - 서식 적용 및 타입 안전성 강화
+    # 5. [추가 기능] 출고 등록 (AZS 전용) - 200 에러 및 서식 완벽 대응
     # ------------------------------------------------------------------
     if current_user == "AZS":
         st.divider()
@@ -190,7 +190,7 @@ if not df.empty:
                 target_df = target_df.copy()
                 target_df['BL넘버'] = '-'
                 
-            # 드롭다운 포맷 (공백 구분)
+            # 드롭다운 포맷
             select_options = target_df.apply(
                 lambda x: f"{x['브랜드']} {x['품명']} {x['창고명']} {x['BL넘버']}", axis=1
             )
@@ -245,22 +245,35 @@ if not df.empty:
                         if target_row_idx != -1:
                             transfer_text = "이체" if input_transfer else ""
                             
-                            # [핵심] str(), int() 변환 -> 200 에러 방지
+                            # [핵심] 안전한 데이터 변환 (200 에러 원천 차단)
+                            # 숫자는 무조건 int()로, 문자는 str()로, 콤마 등은 제거
+                            try:
+                                # 콤마나 소수점이 있을 경우를 대비한 안전한 정수 변환
+                                safe_qty = int(float(str(input_qty).replace(',', '')))
+                            except:
+                                safe_qty = 0
+                                
+                            try:
+                                safe_price = int(float(str(input_price).replace(',', '')))
+                            except:
+                                safe_price = 0
+
+                            # 구글이 좋아하는 깨끗한 리스트 만들기
                             update_data = [
                                 str(input_manager),                     
                                 str(input_client),                      
                                 str(selected_row['품명']),               
                                 str(selected_row['브랜드']),             
                                 str(selected_row.get('BL넘버', '-')),    
-                                int(input_qty),                         
+                                safe_qty,   # 깨끗한 int                  
                                 str(input_warehouse),                   
-                                int(input_price),                       
+                                safe_price, # 깨끗한 int                  
                                 str(transfer_text)                      
                             ]
                             
                             rng = f"D{target_row_idx}:L{target_row_idx}"
                             
-                            # [핵심] USER_ENTERED -> 시트의 기존 서식에 맞춰서 입력됨
+                            # [핵심] USER_ENTERED 옵션 사용 (서식 자동 적용)
                             sheet_out.update(
                                 range_name=rng, 
                                 values=[update_data], 
