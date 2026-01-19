@@ -30,7 +30,7 @@ if not st.session_state['logged_in']:
         login_check(input_id, input_pw)
     st.stop()
 
-# 3. 데이터 로드 및 청소 (여기가 중요!)
+# 3. 데이터 로드 및 청소
 @st.cache_data(ttl=60)
 def load_google_sheet_data():
     try:
@@ -44,18 +44,15 @@ def load_google_sheet_data():
         data = sheet.get_all_records()
         df = pd.DataFrame(data)
         
-        # [수정 1] 복잡한 헤더 이름(브랜드-등급-est)을 심플하게 '브랜드'로 변경
-        # 이렇게 하면 코드에서 '브랜드'라고만 불러도 작동합니다.
+        # 헤더 이름 변경
         if '브랜드-등급-est' in df.columns:
             df.rename(columns={'브랜드-등급-est': '브랜드'}, inplace=True)
             
-        # [수정 2] 데이터 청소 (품명이 비어있는 행 삭제)
-        # 사진에 보이는 '합계' 줄이나 빈 줄을 여기서 걸러냅니다.
+        # 데이터 청소 (품명 비어있는 행 삭제)
         if '품명' in df.columns:
-            # 품명 칸이 비어있거나 공백만 있는 줄은 제거
             df = df[df['품명'].astype(str).str.strip() != '']
 
-        # 공백 제거 (본점 정렬 문제 해결용)
+        # 모든 텍스트 앞뒤 공백 제거
         df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
         
         return df
@@ -95,11 +92,12 @@ if not df.empty:
     if search_brand and '브랜드' in filtered_df.columns:
         filtered_df = filtered_df[filtered_df['브랜드'].astype(str).str.lower().str.startswith(search_brand.lower(), na=False)]
 
-    # --- 2단계: 정렬 (본점 우선 + 품명순) ---
-    if '창고명' in filtered_df.columns and '품명' in filtered_df.columns:
-        filtered_df['is_main'] = filtered_df['창고명'].apply(lambda x: 1 if x == '본점' else 0)
-        filtered_df = filtered_df.sort_values(by=['is_main', '품명'], ascending=[False, True])
-        filtered_df = filtered_df.drop(columns=['is_main'])
+    # --- 2단계: 정렬 (본점 우선 그룹화 + 창고명순 + 품명순) ---
+    if '창고명' in filtered_df.columns:
+        # 본점인 행은 0, 나머지는 1로 설정하여 0이 먼저 나오게 함
+        filtered_df['sort_order'] = filtered_df['창고명'].apply(lambda x: 0 if '본점' in str(x) else 1)
+        filtered_df = filtered_df.sort_values(by=['sort_order', '창고명', '품명'], ascending=[True, True, True])
+        filtered_df = filtered_df.drop(columns=['sort_order'])
 
     st.divider()
     st.subheader(f"총 {len(filtered_df)}건 발견")
