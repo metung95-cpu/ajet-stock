@@ -21,7 +21,6 @@ def login_check(username, password):
     else:
         st.error("아이디 또는 비밀번호를 확인하세요.")
 
-# 로그인 로직
 if not st.session_state['logged_in']:
     st.title("🔒 에이젯 재고관리 로그인")
     input_id = st.text_input("아이디")
@@ -31,7 +30,7 @@ if not st.session_state['logged_in']:
         login_check(input_id, input_pw)
     st.stop()
 
-# 3. 구글 시트 데이터 가져오기
+# 3. 데이터 로드 (구글 시트: 에이젯광주 운영독스)
 @st.cache_data(ttl=60)
 def load_google_sheet_data():
     try:
@@ -43,12 +42,16 @@ def load_google_sheet_data():
         spreadsheet = client.open('에이젯광주 운영독스') 
         sheet = spreadsheet.worksheet('raw_운영부재고')
         data = sheet.get_all_records()
-        return pd.DataFrame(data)
+        df = pd.DataFrame(data)
+        
+        # [데이터 청소] 모든 칸의 앞뒤 공백을 자동으로 제거합니다 (정렬 오류 방지)
+        df = df.applymap(lambda x: x.strip() if isinstance(x, str) else x)
+        return df
     except Exception as e:
         st.error(f"연결 오류: {e}")
         return pd.DataFrame()
 
-# 4. 사이드바 메뉴
+# 4. 사이드바
 with st.sidebar:
     st.write(f"접속자: **{st.session_state.get('user_id', 'AZ')}**")
     if st.button("로그아웃"):
@@ -65,33 +68,29 @@ st.caption(f"최근 조회: {datetime.now().strftime('%H:%M:%S')}")
 df = load_google_sheet_data()
 
 if not df.empty:
-    # --- 검색창 레이아웃 (품명과 브랜드를 나란히 배치) ---
     col1, col2 = st.columns(2)
     with col1:
-        search_item = st.text_input("🔍 품명 검색", placeholder="예: 목살, 삼겹")
+        search_item = st.text_input("🔍 품명 검색")
     with col2:
-        search_brand = st.text_input("🏢 브랜드 검색", placeholder="예: Teys, JBS")
+        search_brand = st.text_input("🏢 브랜드 검색 (앞글자만 쳐도 가능)")
     
-    # --- 정렬 및 필터링 로직 ---
     filtered_df = df.copy()
     
-    # 1. 기본 정렬 (본점 우선 + 품명순)
+    # --- 1단계: 검색 필터링 ---
+    if search_item:
+        filtered_df = filtered_df[filtered_df['품명'].astype(str).str.contains(search_item, na=False)]
+    
+    if search_brand and '브랜드' in filtered_df.columns:
+        # 'startswith'를 사용하여 입력한 글자로 시작하는 브랜드만 골라냅니다 (대소문자 무시)
+        filtered_df = filtered_df[filtered_df['브랜드'].astype(str).str.lower().str.startswith(search_brand.lower(), na=False)]
+
+    # --- 2단계: 정렬 (본점 우선 + 품명순) ---
     if '창고명' in filtered_df.columns and '품명' in filtered_df.columns:
-        filtered_df['is_main'] = filtered_df['창고명'] == '본점'
+        # '본점'인 행은 1, 아니면 0으로 임시 분류하여 정렬
+        filtered_df['is_main'] = filtered_df['창고명'].apply(lambda x: 1 if x == '본점' else 0)
+        # is_main(1이 위로), 그 안에서 품명(가나다순)으로 최종 정렬
         filtered_df = filtered_df.sort_values(by=['is_main', '품명'], ascending=[False, True])
         filtered_df = filtered_df.drop(columns=['is_main'])
-    elif '품명' in filtered_df.columns:
-        filtered_df = filtered_df.sort_values(by='품명')
-
-    # 2. 품명 필터링
-    if search_item:
-        filtered_df = filtered_df[filtered_df['품명'].astype(str).str.contains(search_item)]
-    
-    # 3. 브랜드 필터링 (대소문자 구분 없이 'T'만 쳐도 검색되게 설정)
-    if search_brand and '브랜드' in filtered_df.columns:
-        # case=False: 대소문자 무시 (t를 쳐도 Teys 검색 가능)
-        # na=False: 데이터가 비어있는 칸 에러 방지
-        filtered_df = filtered_df[filtered_df['브랜드'].astype(str).str.contains(search_brand, case=False, na=False)]
 
     st.divider()
     st.subheader(f"총 {len(filtered_df)}건 발견")
