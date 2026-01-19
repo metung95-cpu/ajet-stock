@@ -9,21 +9,18 @@ from oauth2client.service_account import ServiceAccountCredentials
 # ------------------------------------------------------------------
 st.set_page_config(page_title="에이젯 재고관리", page_icon="🥩", layout="wide")
 
-# [핵심] 드롭다운에서 긴 글자가 절대 짤리지 않도록 하는 스타일
+# [핵심] 드롭다운 스타일링
 st.markdown("""
     <style>
-        /* 선택된 항목 표시 부분 줄바꿈 허용 */
         div[data-baseweb="select"] > div {
             white-space: normal !important;
             overflow: visible !important;
             height: auto !important;
             min-height: 50px;
         }
-        
-        /* 펼쳐진 목록 아이템 줄바꿈 허용 */
         ul[role="listbox"] li span {
             white-space: normal !important;
-            word-break: break-all !important; /* 긴 영어 단어(BL번호)도 강제로 줄바꿈 */
+            word-break: break-all !important; 
             display: block !important;
             line-height: 1.5 !important;
         }
@@ -114,7 +111,7 @@ with st.sidebar:
         st.rerun()
 
 # ------------------------------------------------------------------
-# 4. 메인 화면: 재고 조회 및 필터링
+# 4. 메인 화면
 # ------------------------------------------------------------------
 st.title("🥩 에이젯광주 실시간 재고")
 st.caption(f"기준 시간: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
@@ -150,7 +147,6 @@ if not df.empty:
         st.subheader(f"📊 재고 현황 (관리자): {len(filtered_df)}건")
         
     elif current_user == "AZS":
-        # 본점 제외 로직
         if '창고명' in filtered_df.columns:
             filtered_df = filtered_df[~filtered_df['창고명'].astype(str).str.contains("본점", na=False)]
 
@@ -168,7 +164,7 @@ if not df.empty:
         st.warning(f"표시할 데이터 컬럼을 찾을 수 없습니다.")
 
     # ------------------------------------------------------------------
-    # 5. [추가 기능] 출고 등록 기능 (AZS 전용) - 포맷 전격 수정
+    # 5. [추가 기능] 출고 등록 (AZS 전용) - 서식 적용 및 타입 안전성 강화
     # ------------------------------------------------------------------
     if current_user == "AZS":
         st.divider()
@@ -194,8 +190,7 @@ if not df.empty:
                 target_df = target_df.copy()
                 target_df['BL넘버'] = '-'
                 
-            # [수정 완료] 요청하신 포맷: 브랜드 품명 창고 BL넘버
-            # 예: AMH GF 517 꼬리 곤지암 SLAM007712
+            # 드롭다운 포맷 (공백 구분)
             select_options = target_df.apply(
                 lambda x: f"{x['브랜드']} {x['품명']} {x['창고명']} {x['BL넘버']}", axis=1
             )
@@ -250,20 +245,28 @@ if not df.empty:
                         if target_row_idx != -1:
                             transfer_text = "이체" if input_transfer else ""
                             
+                            # [핵심] str(), int() 변환 -> 200 에러 방지
                             update_data = [
-                                input_manager,                  
-                                input_client,                   
-                                selected_row['품명'],            
-                                selected_row['브랜드'],          
-                                selected_row.get('BL넘버', '-'), 
-                                int(input_qty),                 
-                                input_warehouse,                
-                                int(input_price),               
-                                transfer_text                   
+                                str(input_manager),                     
+                                str(input_client),                      
+                                str(selected_row['품명']),               
+                                str(selected_row['브랜드']),             
+                                str(selected_row.get('BL넘버', '-')),    
+                                int(input_qty),                         
+                                str(input_warehouse),                   
+                                int(input_price),                       
+                                str(transfer_text)                      
                             ]
                             
                             rng = f"D{target_row_idx}:L{target_row_idx}"
-                            sheet_out.update(rng, [update_data])
+                            
+                            # [핵심] USER_ENTERED -> 시트의 기존 서식에 맞춰서 입력됨
+                            sheet_out.update(
+                                range_name=rng, 
+                                values=[update_data], 
+                                value_input_option='USER_ENTERED'
+                            )
+                            
                             st.success(f"✅ {target_date_str} / {target_row_idx}행에 등록되었습니다!")
                         else:
                             st.error(f"❌ '{target_date_str}' 날짜의 빈 칸(D열 공백)을 찾을 수 없습니다.")
