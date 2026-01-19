@@ -4,11 +4,16 @@ from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# 1. 화면 설정
+# ------------------------------------------------------------------
+# 1. 기본 설정 및 로그인
+# ------------------------------------------------------------------
 st.set_page_config(page_title="에이젯 재고관리", page_icon="🥩", layout="wide")
 
-# 2. 사용자 로그인 (AZ / 5835)
-USERS = {"AZ": "5835"}
+# 사용자 계정 설정 (관리자 / 영업)
+USERS = {
+    "AZ": "5835",   # 관리자 (모든 권한)
+    "AZS": "0983"   # 영업/물류 (상세 정보)
+}
 
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
@@ -30,25 +35,29 @@ if not st.session_state['logged_in']:
         login_check(input_id, input_pw)
     st.stop()
 
-# 3. 데이터 로드 및 청소
+# ------------------------------------------------------------------
+# 2. 데이터 로드 함수 (구글 시트 연결)
+# ------------------------------------------------------------------
 @st.cache_data(ttl=60)
 def load_google_sheet_data():
     try:
+        # secrets에 저장된 서비스 계정 정보 사용
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds_dict = st.secrets["gcp_service_account"]
         creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
         client = gspread.authorize(creds)
         
+        # 운영독스 - 재고 시트 열기
         spreadsheet = client.open('에이젯광주 운영독스') 
         sheet = spreadsheet.worksheet('raw_운영부재고')
         data = sheet.get_all_records()
         df = pd.DataFrame(data)
         
-        # 헤더 이름 변경
+        # 헤더 이름 정리 (브랜드 컬럼명 통일)
         if '브랜드-등급-est' in df.columns:
             df.rename(columns={'브랜드-등급-est': '브랜드'}, inplace=True)
             
-        # 데이터 청소 (품명 비어있는 행 삭제)
+        # 데이터 청소 (품명 없는 빈 행 삭제)
         if '품명' in df.columns:
             df = df[df['품명'].astype(str).str.strip() != '']
 
@@ -57,10 +66,12 @@ def load_google_sheet_data():
         
         return df
     except Exception as e:
-        st.error(f"연결 오류: {e}")
+        st.error(f"데이터 로드 오류: {e}")
         return pd.DataFrame()
 
-# 4. 사이드바
+# ------------------------------------------------------------------
+# 3. 사이드바 (정보 및 새로고침)
+# ------------------------------------------------------------------
 with st.sidebar:
     st.write(f"접속자: **{st.session_state.get('user_id', 'AZ')}**")
     if st.button("로그아웃"):
@@ -70,9 +81,11 @@ with st.sidebar:
         st.cache_data.clear()
         st.rerun()
 
-# 5. 메인 화면
+# ------------------------------------------------------------------
+# 4. 메인 화면: 재고 조회 및 필터링
+# ------------------------------------------------------------------
 st.title("🥩 에이젯광주 실시간 재고")
-st.caption(f"최근 조회: {datetime.now().strftime('%H:%M:%S')}")
+st.caption(f"기준 시간: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
 
 df = load_google_sheet_data()
 
@@ -81,26 +94,141 @@ if not df.empty:
     with col1:
         search_item = st.text_input("🔍 품명 검색")
     with col2:
-        search_brand = st.text_input("🏢 브랜드 검색 (앞글자만 쳐도 가능)")
+        search_brand = st.text_input("🏢 브랜드 검색")
     
     filtered_df = df.copy()
     
-    # --- 1단계: 검색 필터링 ---
+    # 1단계: 검색 필터링
     if search_item:
         filtered_df = filtered_df[filtered_df['품명'].astype(str).str.contains(search_item, na=False)]
     
     if search_brand and '브랜드' in filtered_df.columns:
         filtered_df = filtered_df[filtered_df['브랜드'].astype(str).str.lower().str.startswith(search_brand.lower(), na=False)]
 
-    # --- 2단계: 정렬 (본점 우선 그룹화 + 창고명순 + 품명순) ---
+    # 2단계: 정렬 (본점 우선 -> 창고명 -> 품명)
     if '창고명' in filtered_df.columns:
-        # 본점인 행은 0, 나머지는 1로 설정하여 0이 먼저 나오게 함
         filtered_df['sort_order'] = filtered_df['창고명'].apply(lambda x: 0 if '본점' in str(x) else 1)
         filtered_df = filtered_df.sort_values(by=['sort_order', '창고명', '품명'], ascending=[True, True, True])
         filtered_df = filtered_df.drop(columns=['sort_order'])
 
     st.divider()
-    st.subheader(f"총 {len(filtered_df)}건 발견")
-    st.dataframe(filtered_df, use_container_width=True, hide_index=True)
+    
+    # 3단계: 사용자별 컬럼 노출 설정
+    current_user = st.session_state.get('user_id')
+    
+    if current_user == "AZ":
+        # 관리자용: 기본 정보 중심
+        target_cols = ['품명', '브랜드', '재고수량', '창고명', '소비기한', '평균중량']
+        st.subheader(f"📊 재고 현황 (관리자): {len(filtered_df)}건")
+        
+    elif current_user == "AZS":
+        # 영업용: BL넘버 포함 상세 정보
+        target_cols = ['품명', '브랜드', '재고수량', 'BL넘버', '창고명', '소비기한', '평균중량']
+        st.subheader(f"📑 상세 재고 조회: {len(filtered_df)}건")
+        
+    else:
+        target_cols = []
+
+    # 실제 시트에 존재하는 컬럼만 표시 (에러 방지)
+    visible_cols = [col for col in target_cols if col in filtered_df.columns]
+
+    if visible_cols:
+        st.dataframe(filtered_df[visible_cols], use_container_width=True, hide_index=True)
+    else:
+        st.warning(f"표시할 데이터 컬럼을 찾을 수 없습니다. 시트 헤더를 확인해주세요.\n요청 컬럼: {target_cols}")
+
+    # ------------------------------------------------------------------
+    # 5. [추가 기능] 출고증 작성 기능
+    # ------------------------------------------------------------------
+    st.divider()
+    st.header("🚚 출고 등록 (출고증 작성)")
+
+    # 리스트박스용 텍스트 생성 (선택 편의성)
+    if 'BL넘버' not in filtered_df.columns:
+        filtered_df['BL넘버'] = '-'
+        
+    select_options = filtered_df.apply(
+        lambda x: f"[{x['브랜드']}] {x['품명']} (재고: {x['재고수량']}) | BL: {x['BL넘버']}", axis=1
+    )
+    
+    # 1. 출고할 물건 선택
+    selected_index = st.selectbox("출고할 품목을 선택하세요:", select_options.index, format_func=lambda i: select_options[i])
+    selected_row = filtered_df.loc[selected_index]
+
+    # 2. 입력 폼
+    with st.form("release_form"):
+        f_col1, f_col2, f_col3 = st.columns(3)
+        
+        with f_col1:
+            input_date = st.date_input("출고일 (달력 선택)", datetime.now())
+            input_manager = st.text_input("담당자 (D열)", value="강경현")
+            input_client = st.text_input("거래처 (E열)")
+            
+        with f_col2:
+            st.text_input("품명 (F열)", value=selected_row['품명'], disabled=True)
+            st.text_input("브랜드 (G열)", value=selected_row['브랜드'], disabled=True)
+            st.text_input("BL식별번호 (H열)", value=selected_row.get('BL넘버', '-'), disabled=True)
+            
+        with f_col3:
+            input_qty = st.number_input("출고 수량 (I열)", min_value=1, value=1)
+            input_warehouse = st.text_input("창고 (J열)", value=selected_row.get('창고명', 'SWC'))
+            input_price = st.number_input("단가 (K열)", min_value=0, step=100)
+            input_transfer = st.checkbox("이체 여부 (L열)", value=True)
+
+        submit_btn = st.form_submit_button("출고 등록하기", type="primary")
+
+        if submit_btn:
+            try:
+                # 3. 출고증 파일 연결
+                scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+                creds_dict = st.secrets["gcp_service_account"]
+                creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
+                client_gs = gspread.authorize(creds)
+                
+                doc = client_gs.open('에이젯광주 출고증') 
+                sheet_out = doc.worksheet('출고증')
+                
+                # 4. 날짜 포맷 변환 (2026-01-19 -> "1. 19" 형식)
+                # 시트의 C열에 보이는 그대로 검색하기 위함
+                target_date_str = f"{input_date.month}. {input_date.day}"
+                
+                # 5. 빈 행 찾기 (아래에서 위로 역순 탐색)
+                all_vals = sheet_out.get_all_values()
+                target_row_idx = -1
+                
+                for i in range(len(all_vals), 0, -1):
+                    row = all_vals[i-1]
+                    # C열(idx 2)이 날짜와 같고, D열(idx 3)이 비어있으면 선택
+                    if len(row) > 2 and str(row[2]).strip() == target_date_str:
+                        if len(row) <= 3 or str(row[3]).strip() == "":
+                            target_row_idx = i
+                            break
+                
+                if target_row_idx != -1:
+                    # 6. 데이터 입력 (D~L열)
+                    transfer_text = "이체" if input_transfer else ""
+                    
+                    update_data = [
+                        input_manager,                  # D 담당자
+                        input_client,                   # E 거래처
+                        selected_row['품명'],            # F 품목
+                        selected_row['브랜드'],          # G 브랜드
+                        selected_row.get('BL넘버', '-'), # H 식별번호
+                        int(input_qty),                 # I 수량
+                        input_warehouse,                # J 창고
+                        int(input_price),               # K 단가
+                        transfer_text                   # L 이체여부
+                    ]
+                    
+                    rng = f"D{target_row_idx}:L{target_row_idx}"
+                    sheet_out.update(rng, [update_data])
+                    st.success(f"✅ {target_date_str} / {target_row_idx}행에 등록되었습니다!")
+                    
+                else:
+                    st.error(f"❌ 날짜 '{target_date_str}'에 해당하는 빈 칸(D열 공백)을 찾을 수 없습니다.")
+                    
+            except Exception as e:
+                st.error(f"오류 발생: {e}")
+
 else:
     st.info("데이터를 불러오는 중이거나 연결에 실패했습니다.")
