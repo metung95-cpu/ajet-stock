@@ -5,23 +5,30 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # ------------------------------------------------------------------
-# 1. 기본 설정 및 CSS (글자 짤림 방지)
+# 1. 기본 설정 및 CSS (글자 짤림 방지 - 강력 적용)
 # ------------------------------------------------------------------
 st.set_page_config(page_title="에이젯 재고관리", page_icon="🥩", layout="wide")
 
-# [수정됨] 드롭다운 메뉴 글자 짤림(...) 방지 스타일 적용
+# [핵심] 드롭다운 글자 짤림(...) 해결을 위한 스타일
 st.markdown("""
     <style>
-        /* 드롭다운 선택된 항목 텍스트 줄바꿈 허용 */
+        /* 1. 선택된 항목(박스 안에 있는 글자) 줄바꿈 허용 */
         div[data-baseweb="select"] > div {
-            white-space: pre-wrap !important;
-            overflow: visible !important;
-            height: auto !important;
+            white-space: normal !important;  /* 줄바꿈 허용 */
+            overflow: visible !important;    /* 넘쳐도 보여줌 */
+            height: auto !important;         /* 높이 자동 조절 */
+            min-height: 50px;               /* 최소 높이 확보 */
         }
-        /* 드롭다운 리스트 옵션 텍스트 줄바꿈 허용 */
+        
+        /* 2. 리스트 옵션(펼쳤을 때 나오는 목록) 줄바꿈 허용 */
+        ul[role="listbox"] li {
+            height: auto !important;
+            padding-top: 10px !important;
+            padding-bottom: 10px !important;
+        }
         ul[role="listbox"] li span {
-            white-space: pre-wrap !important;
-            overflow: visible !important; 
+            white-space: normal !important;  /* 줄바꿈 허용 */
+            max-width: 100%;                 /* 너비 꽉 채우기 */
         }
     </style>
 """, unsafe_allow_html=True)
@@ -141,7 +148,7 @@ if not df.empty:
 
     st.divider()
     
-    # 3단계: 사용자별 컬럼 및 데이터 필터링 (여기가 수정됨)
+    # 3단계: 사용자별 컬럼 및 데이터 필터링
     current_user = st.session_state.get('user_id')
     
     if current_user == "AZ":
@@ -149,9 +156,8 @@ if not df.empty:
         st.subheader(f"📊 재고 현황 (관리자): {len(filtered_df)}건")
         
     elif current_user == "AZS":
-        # [수정됨] AZS 로그인 시 '본점' 데이터 아예 제외하기
+        # AZS 로그인 시 '본점' 제외
         if '창고명' in filtered_df.columns:
-            # 창고명에 '본점'이라는 글자가 없는 행만 남김 (물결표 ~는 반대를 의미)
             filtered_df = filtered_df[~filtered_df['창고명'].astype(str).str.contains("본점", na=False)]
 
         target_cols = ['품명', '브랜드', '재고수량', 'BL넘버', '창고명', '소비기한', '평균중량']
@@ -160,30 +166,37 @@ if not df.empty:
     else:
         target_cols = []
 
-    # 실제 시트에 존재하는 컬럼만 표시
     visible_cols = [col for col in target_cols if col in filtered_df.columns]
 
     if visible_cols:
         st.dataframe(filtered_df[visible_cols], use_container_width=True, hide_index=True)
     else:
-        st.warning(f"표시할 데이터 컬럼을 찾을 수 없습니다. 시트 헤더를 확인해주세요.\n요청 컬럼: {target_cols}")
+        st.warning(f"표시할 데이터 컬럼을 찾을 수 없습니다.")
 
     # ------------------------------------------------------------------
-    # 5. [추가 기능] 출고 등록 기능 (AZS 전용)
+    # 5. [추가 기능] 출고 등록 기능 (AZS 전용) - 검색 기능 강화됨!
     # ------------------------------------------------------------------
     if current_user == "AZS":
         st.divider()
         st.header("🚚 출고 등록 (출고증 작성)")
 
-        st.markdown("##### 1. 품목 선택")
-        release_search = st.text_input("🔍 품목 검색 (빈칸이면 전체 목록)", placeholder="예: 살치, KILCOY, 640 등")
+        st.markdown("##### 1. 품목 찾기 (필터)")
+        
+        # [수정됨] 검색창을 2개로 분리 (품명 / 브랜드)
+        s_col1, s_col2 = st.columns(2)
+        with s_col1:
+            release_search_item = st.text_input("🔍 품명으로 찾기", placeholder="예: 살치, 등심")
+        with s_col2:
+            release_search_brand = st.text_input("🏢 브랜드로 찾기", placeholder="예: KILCOY, 640")
 
-        if release_search:
-            condition = filtered_df['품명'].astype(str).str.contains(release_search, na=False) | \
-                        filtered_df['브랜드'].astype(str).str.contains(release_search, na=False)
-            target_df = filtered_df[condition]
-        else:
-            target_df = filtered_df
+        # 필터링 로직: 품명과 브랜드 조건을 동시에 만족하는 것만 남김
+        target_df = filtered_df.copy() # 위쪽 메인 검색 결과에서 시작
+        
+        if release_search_item:
+            target_df = target_df[target_df['품명'].astype(str).str.contains(release_search_item, na=False)]
+        
+        if release_search_brand:
+            target_df = target_df[target_df['브랜드'].astype(str).str.contains(release_search_brand, na=False)]
 
         if not target_df.empty:
             if 'BL넘버' not in target_df.columns:
@@ -194,7 +207,7 @@ if not df.empty:
                 lambda x: f"[{x['브랜드']}] {x['품명']} (재고: {x['재고수량']}) | BL: {x['BL넘버']}", axis=1
             )
             
-            # [수정됨] 드롭다운에서 짤리는 문제가 해결되었는지 확인해 보세요 (CSS 적용됨)
+            # [확인] 위쪽 CSS 덕분에 이제 글자가 길어도 짤리지 않고 줄바꿈되어 보입니다.
             selected_index = st.selectbox("출고할 품목을 선택하세요:", select_options.index, format_func=lambda i: select_options[i])
             selected_row = target_df.loc[selected_index]
 
