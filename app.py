@@ -112,7 +112,7 @@ if not df.empty:
                         # 시트 연결
                         creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets'])
                         gc = gspread.authorize(creds)
-                        out_sh = gc.open('에이젯광주 출고증').worksheet('출고증')
+                        out_sh = gc.open('에이젯광주 출고증 독스').worksheet('출고증')
                         
                         # [날짜 매칭 핵심] "1. 19" 형식 맞추기
                         target_date = f"{out_date.month}. {out_date.day}"
@@ -149,3 +149,4 @@ if not df.empty:
                         st.exception(e) # 범인을 잡아주는 상세 에러 출력
         else:
             st.warning("검색 결과가 없습니다.")
+
