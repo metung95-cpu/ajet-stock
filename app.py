@@ -46,6 +46,7 @@ def load_data():
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
         client = gspread.authorize(creds)
+        # 운영독스 시트는 기존 이름 유지
         sh = client.open('에이젯광주 운영독스').worksheet('raw_운영부재고')
         df = pd.DataFrame(sh.get_all_records())
         df.rename(columns={'B/L NO':'BL넘버','식별번호':'BL넘버','B/L NO,식별번호':'BL넘버','브랜드-등급-est':'브랜드'}, inplace=True)
@@ -77,7 +78,7 @@ if not df.empty:
     st.dataframe(f_df[cols], use_container_width=True, hide_index=True)
 
     # ------------------------------------------------------------------
-    # 4. 출고 등록 (AZS 전용) - 핵심 수정 부분
+    # 4. 출고 등록 (AZS 전용)
     # ------------------------------------------------------------------
     if current_user == "AZS":
         st.divider()
@@ -93,7 +94,6 @@ if not df.empty:
         if r_brand: t_df = t_df[t_df['브랜드'].str.contains(r_brand, na=False, case=False)]
         
         if not t_df.empty:
-            # 드롭다운 포맷: 브랜드 품명 창고 BL넘버 (요청하신 대로 공백 구분)
             opts = t_df.apply(lambda x: f"{x['브랜드']} {x['품명']} {x.get('창고명','')} {x.get('BL넘버','')}".strip(), axis=1)
             sel_idx = st.selectbox("출고 품목 선택", opts.index, format_func=lambda i: opts[i])
             row = t_df.loc[sel_idx]
@@ -112,23 +112,21 @@ if not df.empty:
                         # 시트 연결
                         creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets'])
                         gc = gspread.authorize(creds)
-                        out_sh = gc.open('에이젯광주 출고증 독스').worksheet('출고증')
                         
-                        # [날짜 매칭 핵심] "1. 19" 형식 맞추기
+                        # [해결 방법] 이름 대신 아이디(Key)로 시트 열기
+                        out_sh = gc.open_by_key('1xdRllSZ0QTS_h8-HNbs0RqFja9PKnklYon7xrKDHTbo').worksheet('출고증')
+                        
                         target_date = f"{out_date.month}. {out_date.day}"
                         
-                        # 모든 데이터 가져와서 날짜 줄 찾기
                         vals = out_sh.get_all_values()
                         target_idx = -1
                         for i, r in enumerate(vals, 1):
-                            # C열(index 2)이 날짜와 일치하고 D열(index 3)이 비어있는지 확인
                             if len(r) > 2 and str(r[2]).strip() == target_date:
                                 if len(r) <= 3 or str(r[3]).strip() == "":
                                     target_idx = i
                                     break
                         
                         if target_idx != -1:
-                            # 데이터 클리닝 (Response 200 방지)
                             data = [
                                 str(manager), str(client_name), str(row['품명']), 
                                 str(row['브랜드']), str(row.get('BL넘버','-')), 
@@ -136,7 +134,6 @@ if not df.empty:
                                 "이체" if is_trans else ""
                             ]
                             
-                            # 최신 gspread update 방식 (가장 안전)
                             out_sh.update(range_name=f"D{target_idx}:L{target_idx}", 
                                          values=[data], 
                                          value_input_option='USER_ENTERED')
@@ -146,7 +143,6 @@ if not df.empty:
                             st.error(f"❌ '{target_date}' 날짜의 빈 행을 찾지 못했습니다. (C열 날짜 확인 필수)")
                     except Exception as e:
                         st.error("🚨 시스템 오류가 발생했습니다.")
-                        st.exception(e) # 범인을 잡아주는 상세 에러 출력
+                        st.exception(e)
         else:
             st.warning("검색 결과가 없습니다.")
-
