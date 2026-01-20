@@ -1,14 +1,15 @@
 import streamlit as st
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
 # ------------------------------------------------------------------
-# 1. 기본 설정 및 드롭다운 줄바꿈 스타일
+# 1. 기본 설정 및 보안 (5분 타이머 로직)
 # ------------------------------------------------------------------
 st.set_page_config(page_title="에이젯 재고관리", page_icon="🥩", layout="wide")
 
+# 드롭다운 줄바꿈 및 스타일 설정
 st.markdown("""
     <style>
         div[data-baseweb="select"] > div { white-space: normal !important; height: auto !important; min-height: 50px; }
@@ -16,15 +17,34 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# 사용자 및 담당자 설정
 USERS = {"AZ": "5835", "AZS": "0983"}
+MANAGERS = ["박정운", "강경현", "송광훈", "정기태", "김미남", "신상명", "백윤주"]
 
+# 세션 상태 초기화
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
+if 'last_activity' not in st.session_state:
+    st.session_state['last_activity'] = datetime.now()
+
+# --- [추가] 5분 자동 로그아웃 체크 로직 ---
+if st.session_state['logged_in']:
+    # 마지막 활동 시간으로부터 경과된 시간 계산
+    elapsed_time = (datetime.now() - st.session_state['last_activity']).total_seconds()
+    
+    if elapsed_time > 300:  # 5분(300초) 초과 시
+        st.session_state['logged_in'] = False
+        st.warning("🔒 5분 동안 활동이 없어 보안을 위해 자동으로 로그아웃되었습니다.")
+        st.rerun()
+    else:
+        # 활동이 감지될 때마다 시간 갱신 (페이지 새로고침/입력 시)
+        st.session_state['last_activity'] = datetime.now()
 
 def login_check(username, password):
     if username in USERS and USERS[username] == password:
         st.session_state['logged_in'] = True
         st.session_state['user_id'] = username
+        st.session_state['last_activity'] = datetime.now()
         st.rerun()
     else:
         st.error("아이디 또는 비밀번호를 확인하세요.")
@@ -46,7 +66,6 @@ def load_data():
         scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
         creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
         client = gspread.authorize(creds)
-        # 운영독스 시트는 기존 이름 유지
         sh = client.open('에이젯광주 운영독스').worksheet('raw_운영부재고')
         df = pd.DataFrame(sh.get_all_records())
         df.rename(columns={'B/L NO':'BL넘버','식별번호':'BL넘버','B/L NO,식별번호':'BL넘버','브랜드-등급-est':'브랜드'}, inplace=True)
@@ -78,13 +97,12 @@ if not df.empty:
     st.dataframe(f_df[cols], use_container_width=True, hide_index=True)
 
     # ------------------------------------------------------------------
-    # 4. 출고 등록 (AZS 전용)
+    # 4. 출고 등록 (AZS 전용 추가 기능)
     # ------------------------------------------------------------------
     if current_user == "AZS":
         st.divider()
         st.header("🚚 출고 등록")
         
-        # 품목 선택 필터
         sc1, sc2 = st.columns(2)
         r_item = sc1.text_input("🔍 품목 필터", key="r_i")
         r_brand = sc2.text_input("🏢 브랜드 필터", key="r_b")
@@ -93,15 +111,20 @@ if not df.empty:
         if r_item: t_df = t_df[t_df['품명'].str.contains(r_item, na=False)]
         if r_brand: t_df = t_df[t_df['브랜드'].str.contains(r_brand, na=False, case=False)]
         
+        # [정렬] 소비기한 임박순(오름차순)
+        if '소비기한' in t_df.columns:
+            t_df = t_df.sort_values(by='소비기한', ascending=True)
+        
         if not t_df.empty:
-            opts = t_df.apply(lambda x: f"{x['브랜드']} {x['품명']} {x.get('창고명','')} {x.get('BL넘버','')}".strip(), axis=1)
-            sel_idx = st.selectbox("출고 품목 선택", opts.index, format_func=lambda i: opts[i])
+            # [드롭다운 구성] 품명 브랜드 재고수량 소비기한 (BL넘버 제외)
+            opts = t_df.apply(lambda x: f"[{x.get('소비기한','')}] {x['품명']} / {x['브랜드']} (재고: {x.get('재고수량','')})".strip(), axis=1)
+            sel_idx = st.selectbox("출고 품목 선택 (소비기한 임박순)", opts.index, format_func=lambda i: opts[i])
             row = t_df.loc[sel_idx]
 
             with st.form("out_form"):
                 f1, f2, f3 = st.columns(3)
                 out_date = f1.date_input("출고일", datetime.now())
-                manager = f1.text_input("담당자", value="강경현")
+                manager = f1.selectbox("담당자", MANAGERS)  # [담당자] 드롭다운
                 client_name = f1.text_input("거래처")
                 qty = f3.number_input("수량", min_value=1, value=1)
                 price = f3.number_input("단가", min_value=0, step=100)
@@ -109,15 +132,13 @@ if not df.empty:
                 
                 if st.form_submit_button("출고 등록하기", type="primary"):
                     try:
-                        # 시트 연결
                         creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets'])
                         gc = gspread.authorize(creds)
                         
-                        # [해결 방법] 이름 대신 아이디(Key)로 시트 열기
+                        # 시트 ID(Key)로 열기
                         out_sh = gc.open_by_key('1xdRllSZ0QTS_h8-HNbs0RqFja9PKnklYon7xrKDHTbo').worksheet('출고증')
                         
                         target_date = f"{out_date.month}. {out_date.day}"
-                        
                         vals = out_sh.get_all_values()
                         target_idx = -1
                         for i, r in enumerate(vals, 1):
@@ -139,8 +160,10 @@ if not df.empty:
                                          value_input_option='USER_ENTERED')
                             
                             st.success(f"✅ {target_date} / {target_idx}행 등록 완료!")
+                            # 활동 시간 갱신
+                            st.session_state['last_activity'] = datetime.now()
                         else:
-                            st.error(f"❌ '{target_date}' 날짜의 빈 행을 찾지 못했습니다. (C열 날짜 확인 필수)")
+                            st.error(f"❌ '{target_date}' 날짜의 빈 행을 찾지 못했습니다.")
                     except Exception as e:
                         st.error("🚨 시스템 오류가 발생했습니다.")
                         st.exception(e)
