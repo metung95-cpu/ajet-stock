@@ -2,3 +2,5 @@ streamlit
 pandas
 gspread
 oauth2client
+google-cloud-bigquery
+db-dtypes
