@@ -3,7 +3,7 @@ import pandas as pd
 from datetime import datetime, timedelta
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import extra_streamlit_components as stx  # [Pro] 쿠키 매니저 추가
+import extra_streamlit_components as stx  # [Pro] 쿠키 매니저 (requirements.txt 필수)
 
 # ------------------------------------------------------------------
 # 1. 기본 설정 및 스타일
@@ -33,12 +33,13 @@ cookie_manager = get_manager()
 
 # 쿠키 확인 및 세션 동기화
 cookie_val = cookie_manager.get(COOKIE_NAME)
+
+# 쿠키가 있으면 로그인 처리, 없으면 초기화
 if cookie_val:
     st.session_state['logged_in'] = True
     st.session_state['user_id'] = cookie_val
-else:
-    if 'logged_in' not in st.session_state:
-        st.session_state['logged_in'] = False
+if 'logged_in' not in st.session_state:
+    st.session_state['logged_in'] = False
 
 def login_check(username, password):
     if username in USERS and USERS[username] == password:
@@ -91,10 +92,11 @@ def load_data():
         client = gspread.authorize(creds)
         sh = client.open('에이젯광주 운영독스').worksheet('raw_운영부재고')
         df = pd.DataFrame(sh.get_all_records())
+        # 컬럼명 통일
         df.rename(columns={'B/L NO':'BL넘버','식별번호':'BL넘버','B/L NO,식별번호':'BL넘버','브랜드-등급-est':'브랜드'}, inplace=True)
         return df.applymap(lambda x: str(x).strip() if x else "")
     except Exception as e:
-        st.error(f"데이터 로드 실패: {e}")
+        # 에러 발생 시 빈 데이터프레임 반환하여 앱이 멈추지 않게 함
         return pd.DataFrame()
 
 # ------------------------------------------------------------------
@@ -180,6 +182,7 @@ if not df.empty:
                         try:
                             creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets'])
                             gc = gspread.authorize(creds)
+                            # 출고증 시트 ID와 이름
                             out_sh = gc.open_by_key('1xdRllSZ0QTS_h8-HNbs0RqFja9PKnklYon7xrKDHTbo').worksheet('출고증')
                             
                             target_date = f"{out_date.month}. {out_date.day}"
@@ -200,6 +203,7 @@ if not df.empty:
                                     int(qty), str(row.get('창고명','')), int(price), 
                                     "이체" if is_trans else ""
                                 ]
+                                # D열부터 L열까지 업데이트
                                 out_sh.update(range_name=f"D{target_idx}:L{target_idx}", values=[data], value_input_option='USER_ENTERED')
                                 st.success(f"✅ {target_date} / {target_idx}행 등록 완료!")
                             else:
