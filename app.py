@@ -21,7 +21,7 @@ st.markdown("""
 
 USERS = {"AZ": "5835", "AZS": "0983"}
 MANAGERS = ["박정운", "강경현", "송광훈", "정기태", "김미남", "신상명", "백윤주"]
-COOKIE_NAME = "ajet_mobile_fix_v3" # 쿠키 이름 변경 (새로 시작)
+COOKIE_NAME = "ajet_mobile_fix_v4" # 쿠키 이름 변경 (충돌 방지)
 
 # ------------------------------------------------------------------
 # 2. 쿠키 매니저 (모바일 최적화)
@@ -165,5 +165,37 @@ if not df.empty:
                 price = f3.number_input("단가", min_value=0, step=100)
                 is_trans = f3.checkbox("이체 여부", value=False)
                 
+                # [오류 해결된 부분]
+                if qty > available_stock:
+                    st.error(f"🚨 재고 부족! (현재고: {available_stock})")
+
                 if st.form_submit_button("출고 등록하기", type="primary"):
-                    if qty >
+                    if qty > available_stock:
+                        st.error("❌ 재고 부족")
+                    elif not client_name:
+                        st.error("❌ 거래처 입력 필수")
+                    else:
+                        try:
+                            creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets'])
+                            gc = gspread.authorize(creds)
+                            out_sh = gc.open_by_key('1xdRllSZ0QTS_h8-HNbs0RqFja9PKnklYon7xrKDHTbo').worksheet('출고증')
+                            
+                            target_date = f"{out_date.month}. {out_date.day}"
+                            vals = out_sh.get_all_values()
+                            target_idx = -1
+                            for i, r in enumerate(vals, 1):
+                                if len(r) > 2 and str(r[2]).strip() == target_date:
+                                    if len(r) <= 3 or str(r[3]).strip() == "":
+                                        target_idx = i
+                                        break
+                            
+                            if target_idx != -1:
+                                data = [str(manager), str(client_name), str(row['품명']), str(row['브랜드']), str(row.get('BL넘버','-')), int(qty), str(row.get('창고명','')), int(price), "이체" if is_trans else ""]
+                                out_sh.update(range_name=f"D{target_idx}:L{target_idx}", values=[data], value_input_option='USER_ENTERED')
+                                st.success("✅ 등록 완료!")
+                            else:
+                                st.error(f"❌ '{target_date}' 빈 행 없음")
+                        except Exception as e:
+                            st.error(f"에러: {e}")
+        else:
+            st.warning("검색 결과가 없습니다.")
