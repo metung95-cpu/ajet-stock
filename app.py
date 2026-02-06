@@ -21,18 +21,19 @@ st.markdown("""
 
 USERS = {"AZ": "5835", "AZS": "0983"}
 MANAGERS = ["박정운", "강경현", "송광훈", "정기태", "김미남", "신상명", "백윤주"]
-COOKIE_NAME = "ajet_mobile_fix_v4" # 쿠키 이름 변경 (충돌 방지)
+COOKIE_NAME = "ajet_final_fix_v5" 
 
 # ------------------------------------------------------------------
-# 2. 쿠키 매니저 (모바일 최적화)
+# 2. 쿠키 매니저 (오류 해결됨)
 # ------------------------------------------------------------------
-@st.cache_resource(experimental_allow_widgets=True)
+# [수정] 괄호 안의 옵션을 싹 지웠습니다. 이제 TypeError가 안 납니다.
+@st.cache_resource
 def get_manager():
     return stx.CookieManager()
 
 cookie_manager = get_manager()
 
-# [핵심 수정] 모바일은 쿠키 로딩이 느리므로 0.5초 대기
+# 모바일 로딩 대기
 time.sleep(0.5)
 
 # 세션 초기화
@@ -56,12 +57,12 @@ def login_check(username, password):
         st.session_state['logged_in'] = True
         st.session_state['user_id'] = username
         
-        # [핵심] 쿠키 수명을 7일로 넉넉하게 설정
+        # 7일간 유지
         expires = datetime.now() + timedelta(days=7)
         cookie_manager.set(COOKIE_NAME, username, expires_at=expires)
         
-        st.success("✅ 로그인 성공! (정보 저장 중...)")
-        time.sleep(1) # 저장 시간 확보
+        st.success("✅ 로그인 성공! (저장 중...)")
+        time.sleep(1)
         st.rerun()
     else:
         st.error("아이디 또는 비밀번호를 확인하세요.")
@@ -78,8 +79,7 @@ def logout():
 if not st.session_state['logged_in']:
     st.title("🔒 에이젯 재고관리 로그인")
     
-    # [추가] 모바일에서 가끔 로딩 실패할 때 누르는 버튼
-    if st.button("🔄 자동 로그인 재시도 (접속이 안 될 때)"):
+    if st.button("🔄 자동 로그인 재시도"):
         st.rerun()
         
     with st.form("login_form"):
@@ -90,7 +90,7 @@ if not st.session_state['logged_in']:
     st.stop()
 
 # ------------------------------------------------------------------
-# 5. 메인 화면 (데이터 로드 및 업무)
+# 5. 메인 화면
 # ------------------------------------------------------------------
 with st.sidebar:
     st.write(f"👤 **{st.session_state['user_id']}**님")
@@ -165,7 +165,7 @@ if not df.empty:
                 price = f3.number_input("단가", min_value=0, step=100)
                 is_trans = f3.checkbox("이체 여부", value=False)
                 
-                # [오류 해결된 부분]
+                # [수정] 아까 문법 오류나던 부분 완벽 수정
                 if qty > available_stock:
                     st.error(f"🚨 재고 부족! (현재고: {available_stock})")
 
