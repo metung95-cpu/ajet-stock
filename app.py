@@ -3,16 +3,14 @@ import pandas as pd
 from datetime import datetime, timedelta
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import extra_streamlit_components as stx  # [Pro] 쿠키 매니저 추가
+import extra_streamlit_components as stx
+import time
 
 # ------------------------------------------------------------------
-# 1. 기본 설정 및 보안 (5분 타이머)
 # 1. 기본 설정 및 스타일
 # ------------------------------------------------------------------
 st.set_page_config(page_title="에이젯 재고관리", page_icon="🥩", layout="wide")
 
-# 드롭다운 줄바꿈 및 스타일 최적화 (텍스트가 길어도 잘리지 않게 옆으로 확장)
-# 드롭다운 줄바꿈 및 스타일 최적화
 st.markdown("""
     <style>
         div[data-baseweb="select"] > div { white-space: normal !important; height: auto !important; min-height: 60px; }
@@ -22,34 +20,37 @@ st.markdown("""
 
 USERS = {"AZ": "5835", "AZS": "0983"}
 MANAGERS = ["박정운", "강경현", "송광훈", "정기태", "김미남", "신상명", "백윤주"]
-COOKIE_NAME = "az_inventory_auth"  # 브라우저에 저장될 쿠키 이름
+COOKIE_NAME = "az_inventory_auth" 
 
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 if 'last_activity' not in st.session_state:
     st.session_state['last_activity'] = datetime.now()
+
 # ------------------------------------------------------------------
-# 2. 쿠키 기반 로그인 시스템 (24시간 유지)
+# 2. 쿠키 기반 로그인 시스템 (30분 유지)
 # ------------------------------------------------------------------
 @st.cache_resource(experimental_allow_widgets=True)
 def get_manager():
     return stx.CookieManager()
 
 cookie_manager = get_manager()
+time.sleep(0.5) # 쿠키 매니저 초기화 안정화
 
-# 5분 자동 로그아웃 체크
-if st.session_state['logged_in']:
-    elapsed = (datetime.now() - st.session_state['last_activity']).total_seconds()
-    if elapsed > 300:
-# 쿠키 확인 및 세션 동기화
+# 브라우저 쿠키를 확인하여 다른 탭/새로고침 시에도 로그인 유지
 cookie_val = cookie_manager.get(COOKIE_NAME)
 if cookie_val:
     st.session_state['logged_in'] = True
     st.session_state['user_id'] = cookie_val
-else:
-    if 'logged_in' not in st.session_state:
+
+# 30분(1800초) 자동 로그아웃 체크 로직 (들여쓰기 완벽 수정)
+if st.session_state['logged_in']:
+    elapsed = (datetime.now() - st.session_state.get('last_activity', datetime.now())).total_seconds()
+    if elapsed > 1800:
+        cookie_manager.delete(COOKIE_NAME)
         st.session_state['logged_in'] = False
-        st.warning("🔒 보안을 위해 자동 로그아웃되었습니다.")
+        st.warning("🔒 30분간 활동이 없어 자동 로그아웃되었습니다.")
+        time.sleep(1)
         st.rerun()
     else:
         st.session_state['last_activity'] = datetime.now()
@@ -60,14 +61,15 @@ def login_check(username, password):
         st.session_state['user_id'] = username
         st.session_state['last_activity'] = datetime.now()
         
-        # [핵심] 쿠키 생성: 만료일 1일(24시간) 후
-        expire_date = datetime.now() + timedelta(days=1)
+        # 브라우저 쿠키 자체도 30분 뒤에 만료되도록 설정
+        expire_date = datetime.now() + timedelta(minutes=30)
         cookie_manager.set(COOKIE_NAME, username, expires_at=expire_date)
         
-        st.success("✅ 로그인 성공! (24시간 유지됩니다)")
+        st.success("✅ 로그인 성공! (30분간 유지됩니다)")
+        time.sleep(1)
         st.rerun()
     else:
-        st.error("아이디 또는 비밀번호를 확인하세요.")
+        st.error("❌ 아이디 또는 비밀번호를 확인하세요.")
 
 def logout():
     cookie_manager.delete(COOKIE_NAME)
@@ -76,15 +78,10 @@ def logout():
     st.rerun()
 
 # ------------------------------------------------------------------
-# 3. 로그인 화면 (로그인 안 된 경우 여기서 멈춤)
+# 3. 로그인 화면 
 # ------------------------------------------------------------------
 if not st.session_state['logged_in']:
     st.title("🔒 에이젯 재고관리 로그인")
-    i_id = st.text_input("아이디")
-    i_pw = st.text_input("비밀번호", type="password")
-    if st.button("로그인", type="primary", use_container_width=True):
-        login_check(i_id.strip().upper(), i_pw.strip())
-    st.stop()
     with st.form("login_form"):
         i_id = st.text_input("아이디")
         i_pw = st.text_input("비밀번호", type="password")
@@ -92,13 +89,11 @@ if not st.session_state['logged_in']:
         
         if submit:
             login_check(i_id.strip().upper(), i_pw.strip())
-    st.stop()  # 로그인 전이면 아래 코드 실행 안 함
+    st.stop()  # 로그인 전이면 아래 코드(데이터 로드) 실행 안 함
 
 # ------------------------------------------------------------------
-# 2. 데이터 로드 (재고 시트)
-# 4. 메인 화면 시작 (사이드바 및 데이터 로드)
+# 4. 메인 화면 시작 (데이터 로드 및 사이드바)
 # ------------------------------------------------------------------
-# 사이드바: 사용자 정보 및 로그아웃
 with st.sidebar:
     st.write(f"👤 **{st.session_state['user_id']}**님 접속 중")
     if st.button("로그아웃"):
@@ -114,13 +109,11 @@ def load_data():
         df = pd.DataFrame(sh.get_all_records())
         df.rename(columns={'B/L NO':'BL넘버','식별번호':'BL넘버','B/L NO,식별번호':'BL넘버','브랜드-등급-est':'브랜드'}, inplace=True)
         return df.applymap(lambda x: str(x).strip() if x else "")
-    except: return pd.DataFrame()
     except Exception as e:
         st.error(f"데이터 로드 실패: {e}")
         return pd.DataFrame()
 
 # ------------------------------------------------------------------
-# 3. 메인 화면 (조회)
 # 5. 조회 및 업무 로직
 # ------------------------------------------------------------------
 st.title("🥩 에이젯광주 실시간 재고")
@@ -144,10 +137,11 @@ if not df.empty:
     else:
         cols = ['품명', '브랜드', '재고수량', '창고명', '소비기한']
 
-    st.dataframe(f_df[cols], use_container_width=True, hide_index=True)
+    # 열 이름 존재 여부 확인 후 출력 (안전 장치 추가)
+    valid_cols = [c for c in cols if c in f_df.columns]
+    st.dataframe(f_df[valid_cols], use_container_width=True, hide_index=True)
 
     # ------------------------------------------------------------------
-    # 4. 출고 등록 (AZS 전용)
     # 6. 출고 등록 (AZS 전용 기능)
     # ------------------------------------------------------------------
     if current_user == "AZS":
@@ -158,24 +152,18 @@ if not df.empty:
         r_item = sc1.text_input("🔍 품목 필터", key="r_i")
         r_brand = sc2.text_input("🏢 브랜드 필터", key="r_b")
 
-        # [데이터 정비] 인덱스가 꼬이지 않도록 초기화
         t_df = f_df.copy().reset_index(drop=True)
         if r_item: t_df = t_df[t_df['품명'].str.contains(r_item, na=False)]
         if r_brand: t_df = t_df[t_df['브랜드'].str.contains(r_brand, na=False, case=False)]
 
-        # [정렬] 소비기한 임박순
         if '소비기한' in t_df.columns:
             t_df = t_df.sort_values(by='소비기한', ascending=True)
 
         if not t_df.empty:
-            # [수정] 드롭다운 형식: 창고 품목 브랜드 수량 유통기한 순
-            # [수정] 드롭다운 형식
             opts = t_df.apply(lambda x: f"[{x.get('창고명','미지정')}] {x['품명']} / {x['브랜드']} (재고: {x.get('재고수량','0')}) [소비기한: {x.get('소비기한','')}]".strip(), axis=1)
             sel_idx = st.selectbox("출고 품목 선택 (소비기한 임박순)", opts.index, format_func=lambda i: opts[i])
             row = t_df.loc[sel_idx]
 
-            # 실재고 파악 (콤마 제거 및 숫자 변환 안전화)
-            # 실재고 파악
             try:
                 stock_val = str(row.get('재고수량', '0')).replace(',', '')
                 available_stock = float(stock_val) if stock_val else 0.0
@@ -190,7 +178,6 @@ if not df.empty:
 
                 qty = f3.number_input("수량", min_value=1.0, step=1.0, value=1.0)
 
-                # [안내문] 실시간 재고 체크
                 if qty > available_stock:
                     st.error(f"🚨 출고 가능한 재고({available_stock})를 초과했습니다.")
 
@@ -212,7 +199,6 @@ if not df.empty:
                             vals = out_sh.get_all_values()
                             target_idx = -1
                             
-                            # 날짜에 맞는 빈 행 찾기
                             for i, r in enumerate(vals, 1):
                                 if len(r) > 2 and str(r[2]).strip() == target_date:
                                     if len(r) <= 3 or str(r[3]).strip() == "":
