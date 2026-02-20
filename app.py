@@ -30,7 +30,8 @@ if 'last_activity' not in st.session_state:
 # ------------------------------------------------------------------
 # 2. 쿠키 기반 로그인 시스템 (30분 유지)
 # ------------------------------------------------------------------
-@st.cache_resource(experimental_allow_widgets=True)
+# TypeError 원인이었던 experimental_allow_widgets=True 제거 완료!
+@st.cache_resource
 def get_manager():
     return stx.CookieManager()
 
@@ -43,7 +44,7 @@ if cookie_val:
     st.session_state['logged_in'] = True
     st.session_state['user_id'] = cookie_val
 
-# 30분(1800초) 자동 로그아웃 체크 로직 (들여쓰기 완벽 수정)
+# 30분(1800초) 자동 로그아웃 체크 로직
 if st.session_state['logged_in']:
     elapsed = (datetime.now() - st.session_state.get('last_activity', datetime.now())).total_seconds()
     if elapsed > 1800:
