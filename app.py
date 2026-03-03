@@ -28,29 +28,28 @@ if 'last_activity' not in st.session_state:
     st.session_state['last_activity'] = datetime.now()
 
 # ------------------------------------------------------------------
-# 2. 쿠키 기반 로그인 시스템 (30분 유지)
+# 2. 쿠키 기반 로그인 시스템 (노란 박스 에러 해결)
 # ------------------------------------------------------------------
-# TypeError 원인이었던 experimental_allow_widgets=True 제거 완료!
-@st.cache_resource
-def get_manager():
-    return stx.CookieManager()
+# 💡 @st.cache_resource를 제거하여 스트림릿 위젯 캐시 에러를 원천 차단했습니다.
+cookie_manager = stx.CookieManager()
 
-cookie_manager = get_manager()
-time.sleep(0.5) # 쿠키 매니저 초기화 안정화
+time.sleep(0.1) # 쿠키 매니저 초기화 딜레이
 
-# 브라우저 쿠키를 확인하여 다른 탭/새로고침 시에도 로그인 유지
-cookie_val = cookie_manager.get(COOKIE_NAME)
-if cookie_val:
-    st.session_state['logged_in'] = True
-    st.session_state['user_id'] = cookie_val
+# 브라우저 쿠키를 확인하여 로그인 유지 (세션이 False일 때만 체크하여 보안 강화)
+if not st.session_state['logged_in']:
+    cookie_val = cookie_manager.get(COOKIE_NAME)
+    if cookie_val:
+        st.session_state['logged_in'] = True
+        st.session_state['user_id'] = cookie_val
+        st.rerun()
 
-# 30분(1800초) 자동 로그아웃 체크 로직
+# 8시간(28800초) 자동 로그아웃 체크 로직
 if st.session_state['logged_in']:
     elapsed = (datetime.now() - st.session_state.get('last_activity', datetime.now())).total_seconds()
-    if elapsed > 1800:
+    if elapsed > 28800:
         cookie_manager.delete(COOKIE_NAME)
         st.session_state['logged_in'] = False
-        st.warning("🔒 30분간 활동이 없어 자동 로그아웃되었습니다.")
+        st.warning("🔒 8시간이 지나 자동 로그아웃되었습니다. 다시 로그인해주세요.")
         time.sleep(1)
         st.rerun()
     else:
@@ -62,11 +61,11 @@ def login_check(username, password):
         st.session_state['user_id'] = username
         st.session_state['last_activity'] = datetime.now()
         
-        # 브라우저 쿠키 자체도 30분 뒤에 만료되도록 설정
-        expire_date = datetime.now() + timedelta(minutes=30)
+        # 브라우저 쿠키 자체도 8시간 뒤에 만료되도록 완벽 설정
+        expire_date = datetime.now() + timedelta(hours=8)
         cookie_manager.set(COOKIE_NAME, username, expires_at=expire_date)
         
-        st.success("✅ 로그인 성공! (30분간 유지됩니다)")
+        st.success("✅ 로그인 성공! (8시간 동안 유지됩니다)")
         time.sleep(1)
         st.rerun()
     else:
@@ -79,7 +78,7 @@ def logout():
     st.rerun()
 
 # ------------------------------------------------------------------
-# 3. 로그인 화면 
+# 3. 로그인 화면 (데이터 로드 전 완벽 차단)
 # ------------------------------------------------------------------
 if not st.session_state['logged_in']:
     st.title("🔒 에이젯 재고관리 로그인")
@@ -90,11 +89,11 @@ if not st.session_state['logged_in']:
         
         if submit:
             login_check(i_id.strip().upper(), i_pw.strip())
-    st.stop()  # 로그인 전이면 아래 코드(데이터 로드) 실행 안 함
+    st.stop()  # 💡 로그인이 안 되어 있으면 여기서 코드를 강제 종료시켜 데이터 접근을 100% 차단합니다.
 
-# ------------------------------------------------------------------
-# 4. 메인 화면 시작 (데이터 로드 및 사이드바)
-# ------------------------------------------------------------------
+# ==================================================================
+# 4. 메인 화면 시작 (로그인 성공 시에만 아래 코드 실행)
+# ==================================================================
 with st.sidebar:
     st.write(f"👤 **{st.session_state['user_id']}**님 접속 중")
     if st.button("로그아웃"):
@@ -138,7 +137,7 @@ if not df.empty:
     else:
         cols = ['품명', '브랜드', '재고수량', '창고명', '소비기한']
 
-    # 열 이름 존재 여부 확인 후 출력 (안전 장치 추가)
+    # 열 이름 존재 여부 확인 후 출력
     valid_cols = [c for c in cols if c in f_df.columns]
     st.dataframe(f_df[valid_cols], use_container_width=True, hide_index=True)
 
