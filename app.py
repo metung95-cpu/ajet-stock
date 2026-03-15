@@ -28,14 +28,12 @@ if 'last_activity' not in st.session_state:
     st.session_state['last_activity'] = datetime.now()
 
 # ------------------------------------------------------------------
-# 2. 쿠키 기반 로그인 시스템 (노란 박스 에러 해결)
+# 2. 쿠키 기반 로그인 시스템
 # ------------------------------------------------------------------
-# 💡 @st.cache_resource를 제거하여 스트림릿 위젯 캐시 에러를 원천 차단했습니다.
 cookie_manager = stx.CookieManager()
 
 time.sleep(0.1) # 쿠키 매니저 초기화 딜레이
 
-# 브라우저 쿠키를 확인하여 로그인 유지 (세션이 False일 때만 체크하여 보안 강화)
 if not st.session_state['logged_in']:
     cookie_val = cookie_manager.get(COOKIE_NAME)
     if cookie_val:
@@ -43,7 +41,6 @@ if not st.session_state['logged_in']:
         st.session_state['user_id'] = cookie_val
         st.rerun()
 
-# 8시간(28800초) 자동 로그아웃 체크 로직
 if st.session_state['logged_in']:
     elapsed = (datetime.now() - st.session_state.get('last_activity', datetime.now())).total_seconds()
     if elapsed > 28800:
@@ -61,7 +58,6 @@ def login_check(username, password):
         st.session_state['user_id'] = username
         st.session_state['last_activity'] = datetime.now()
         
-        # 브라우저 쿠키 자체도 8시간 뒤에 만료되도록 완벽 설정
         expire_date = datetime.now() + timedelta(hours=8)
         cookie_manager.set(COOKIE_NAME, username, expires_at=expire_date)
         
@@ -78,7 +74,7 @@ def logout():
     st.rerun()
 
 # ------------------------------------------------------------------
-# 3. 로그인 화면 (데이터 로드 전 완벽 차단)
+# 3. 로그인 화면
 # ------------------------------------------------------------------
 if not st.session_state['logged_in']:
     st.title("🔒 에이젯 재고관리 로그인")
@@ -89,10 +85,10 @@ if not st.session_state['logged_in']:
         
         if submit:
             login_check(i_id.strip().upper(), i_pw.strip())
-    st.stop()  # 💡 로그인이 안 되어 있으면 여기서 코드를 강제 종료시켜 데이터 접근을 100% 차단합니다.
+    st.stop()
 
 # ==================================================================
-# 4. 메인 화면 시작 (로그인 성공 시에만 아래 코드 실행)
+# 4. 메인 화면 시작
 # ==================================================================
 with st.sidebar:
     st.write(f"👤 **{st.session_state['user_id']}**님 접속 중")
@@ -130,14 +126,12 @@ if not df.empty:
 
     current_user = st.session_state['user_id']
     
-    # AZS 계정은 '본점' 창고 제외
     if current_user == "AZS":
         f_df = f_df[~f_df['창고명'].str.contains("본점", na=False)]
         cols = ['품명', '브랜드', '재고수량', 'BL넘버', '창고명', '소비기한']
     else:
         cols = ['품명', '브랜드', '재고수량', '창고명', '소비기한']
 
-    # 열 이름 존재 여부 확인 후 출력
     valid_cols = [c for c in cols if c in f_df.columns]
     st.dataframe(f_df[valid_cols], use_container_width=True, hide_index=True)
 
@@ -172,21 +166,25 @@ if not df.empty:
 
             with st.form("out_form"):
                 f1, f2, f3 = st.columns(3)
+                
+                # 왼쪽(f1)
                 out_date = f1.date_input("출고일", datetime.now())
                 manager = f1.selectbox("담당자", MANAGERS)
                 client_name = f1.text_input("거래처")
 
+                # 중앙(f2): 새로 추가된 변경사항 입력란
+                changes = f2.text_input("변경사항", placeholder="변경사항을 입력하세요")
+
+                # 오른쪽(f3)
                 qty = f3.number_input("수량", min_value=1.0, step=1.0, value=1.0)
-
-                if qty > available_stock:
-                    st.error(f"🚨 출고 가능한 재고({available_stock})를 초과했습니다.")
-
                 price = f3.number_input("단가", min_value=0, step=100)
-                is_trans = f3.checkbox("이체 여부 (필요 시 체크)", value=False)
+                
+                # 기존 이체 여부 체크박스 재배치
+                is_trans = f3.checkbox("이체 여부 (체크 시 L열 입력)", value=False)
 
                 if st.form_submit_button("출고 등록하기", type="primary"):
                     if qty > available_stock:
-                        st.error("❌ 재고가 부족하여 등록할 수 없습니다.")
+                        st.error(f"❌ 재고가 부족합니다. (현재 재고: {available_stock})")
                     elif not client_name:
                         st.error("❌ 거래처를 입력해주세요.")
                     else:
@@ -206,19 +204,29 @@ if not df.empty:
                                         break
 
                             if target_idx != -1:
+                                # D열 ~ M열까지 10개 데이터 매핑
                                 data = [
-                                    str(manager), str(client_name), str(row['품명']), 
-                                    str(row['브랜드']), str(row.get('BL넘버','-')), 
-                                    int(qty), str(row.get('창고명','')), int(price), 
-                                    "이체" if is_trans else ""
+                                    str(manager),                # D열
+                                    str(client_name),            # E열
+                                    str(row['품명']),            # F열
+                                    str(row['브랜드']),          # G열
+                                    str(row.get('BL넘버','-')),  # H열
+                                    int(qty),                    # I열
+                                    str(row.get('창고명','')),   # J열
+                                    int(price),                  # K열
+                                    "이체" if is_trans else "",  # L열 (체크박스)
+                                    str(changes)                 # M열 (변경사항)
                                 ]
-                                out_sh.update(range_name=f"D{target_idx}:L{target_idx}", values=[data], value_input_option='USER_ENTERED')
-                                st.success(f"✅ {target_date} / {target_idx}행 등록 완료!")
+                                
+                                # 범위를 D~M으로 넓혀서 업데이트
+                                out_sh.update(range_name=f"D{target_idx}:M{target_idx}", values=[data], value_input_option='USER_ENTERED')
+                                
+                                st.success(f"✅ {target_date} / {target_idx}행 등록 완료! (이체/변경사항 포함)")
                                 st.session_state['last_activity'] = datetime.now()
                             else:
-                                st.error(f"❌ '{target_date}' 날짜의 빈 행이 없습니다.")
+                                st.error(f"❌ '{target_date}' 날짜의 빈 행이 없습니다. 구글 시트를 확인해 주세요.")
                         except Exception as e:
-                            st.error("🚨 시스템 오류!")
+                            st.error("🚨 시스템 오류가 발생했습니다.")
                             st.exception(e)
         else:
             st.warning("검색 결과가 없습니다.")
