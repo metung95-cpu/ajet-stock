@@ -16,7 +16,7 @@ def get_gspread_client():
         credentials = Credentials.from_service_account_file('key.json', scopes=scope)
     return gspread.authorize(credentials)
 
-# --- 2. 데이터 로딩 (전체 열 유지 + 정렬 로직) ---
+# --- 2. 데이터 로딩 (인덱스 기반 매핑) ---
 @st.cache_data(ttl=60)
 def load_inventory():
     try:
@@ -27,26 +27,37 @@ def load_inventory():
         
         if len(all_data) <= 1: return pd.DataFrame()
 
-        # 원본 헤더와 데이터 가져오기
-        headers = [h.strip() for h in all_data[0]]
-        df = pd.DataFrame(all_data[1:], columns=headers)
-        
-        # [열 위치 기반 핵심 데이터 추출]
-        # A(0):품명, B(1):브랜드, D(3):재고수량, E(4):창고명, F(5):소비기한
-        df['_품명'] = df.iloc[:, 0].str.strip()
-        df['_브랜드'] = df.iloc[:, 1].str.strip()
-        df['_재고'] = df.iloc[:, 3].str.strip()
-        df['_창고'] = df.iloc[:, 4].str.strip()
-        df['_소비'] = df.iloc[:, 5].str.strip()
-        
-        # [날짜 가공]
-        df['_소비_short'] = df['_소비'].apply(lambda x: x[2:] if str(x).startswith("20") else x)
-        df['_date_sort'] = pd.to_datetime(df['_소비'], errors='coerce').fillna(pd.Timestamp('2099-12-31'))
-        
-        # [본점 정렬용] 본점이면 1, 아니면 0
-        df['_is_bonjum'] = df['_창고'].apply(lambda x: 1 if "본점" in str(x) else 0)
-        
-        return df
+        # 원본 헤더 무시하고 상명님 시트 위치(A, B, D, E, F)로 직접 매핑
+        rows = all_data[1:]
+        processed = []
+        for r in rows:
+            # 칸이 부족할 경우 대비해 최소 6열(F열)까지 있는지 확인
+            if len(r) < 6: continue
+            
+            warehouse = r[4].strip() # E열: 창고명
+            item_name = r[0].strip() # A열: 품명
+            brand = r[1].strip()     # B열: 브랜드-등급-est
+            qty = r[3].strip()       # D열: 재고수량
+            expiry = r[5].strip()    # F열: 소비기한
+            
+            # 날짜 축소 (2027.02.16 -> 27.02.16)
+            short_exp = expiry[2:] if expiry.startswith("20") else expiry
+            
+            # 본점 정렬용 (본점이면 1, 아니면 0)
+            is_bonjum = 1 if "본점" in warehouse else 0
+            
+            processed.append({
+                "품목": item_name,
+                "브랜드": brand,
+                "재고": qty,
+                "창고": warehouse,
+                "소비기한": short_exp,
+                "_full_expiry": expiry,
+                "_is_bonjum": is_bonjum,
+                "_date_sort": pd.to_datetime(expiry, errors='coerce').fillna(pd.Timestamp('2099-12-31'))
+            })
+            
+        return pd.DataFrame(processed)
     except Exception as e:
         st.error(f"데이터 연결 오류: {e}")
         return pd.DataFrame()
@@ -73,7 +84,7 @@ if not st.session_state.logged_in:
 
 df = load_inventory()
 
-# --- 5. 실시간 재고 현황 (표: 본점 최하단) ---
+# --- 5. 실시간 재고 현황 (품목-브랜드-재고-창고-소비기한 순서) ---
 st.title("📦 에이젯 실시간 재고 현황")
 
 if not df.empty:
@@ -82,17 +93,17 @@ if not df.empty:
     with col2: f_brand = st.text_input("🔍 브랜드 검색", "")
 
     v_df = df.copy()
-    if f_name: v_df = v_df[v_df['_품명'].str.contains(f_name, na=False, case=False)]
-    if f_brand: v_df = v_df[v_df['_브랜드'].str.contains(f_brand, na=False, case=False)]
+    if f_name: v_df = v_df[v_df['품목'].str.contains(f_name, na=False, case=False)]
+    if f_brand: v_df = v_df[v_df['브랜드'].str.contains(f_brand, na=False, case=False)]
 
-    # [표 정렬] 본점 물량을 무조건 맨 아래로 (0: 타창고, 1: 본점)
-    v_df = v_df.sort_values(by=['_is_bonjum', '_브랜드', '_date_sort'])
+    # [중요] 정렬: 본점 여부(0->1) -> 브랜드 -> 소비기한 순
+    v_df = v_df.sort_values(by=['_is_bonjum', '브랜드', '_date_sort'])
     
-    # 원본 열만 노출
-    original_cols = [c for c in v_df.columns if not str(c).startswith('_')]
-    st.dataframe(v_df[original_cols], use_container_width=True, hide_index=True)
+    # [중요] 상명님이 요청하신 순서대로 열 배치
+    display_cols = ['품목', '브랜드', '재고', '창고', '소비기한']
+    st.dataframe(v_df[display_cols], use_container_width=True, hide_index=True)
 
-# --- 6. 출고 등록 (드롭다운: 본점 완전 제거) ---
+# --- 6. 출고 등록 (본점 완전 제외) ---
 if st.session_state.user_role == "AZS" and not df.empty:
     st.markdown("---")
     st.subheader("📝 출고 등록")
@@ -101,17 +112,17 @@ if st.session_state.user_role == "AZS" and not df.empty:
     
     selected_row = None
     if item_query:
-        # [핵심] 검색어 포함 + '본점' 재고는 아예 제외
-        sel = df[(df['_품명'].str.contains(item_query, na=False, case=False)) & (df['_is_bonjum'] == 0)]
-        sel = sel.sort_values(by=['_브랜드', '_date_sort'])
+        # [핵심] 출고 등록에서는 본점(_is_bonjum == 1)을 아예 제거
+        sel = df[(df['품목'].str.contains(item_query, na=False, case=False)) & (df['_is_bonjum'] == 0)]
+        sel = sel.sort_values(by=['브랜드', '_date_sort'])
         
         if not sel.empty:
-            # 드롭다운 형식: 소비기한 / 품목 / 브랜드 / 수량 / 창고
-            sel['label'] = sel.apply(lambda x: f"{x['_소비_short']} / {x['_품명']} / {x['_브랜드']} / {x['_재고']} / {x['_창고']}", axis=1)
-            target = st.selectbox("재고 선택 (본점 물량 제외됨)", sel['label'].tolist())
+            # 포맷: 소비기한 / 품목 / 브랜드 / 재고 / 창고
+            sel['label'] = sel.apply(lambda x: f"{x['소비기한']} / {x['품목']} / {x['브랜드']} / {x['재고']} / {x['창고']}", axis=1)
+            target = st.selectbox("재고 선택 (본점 제외됨)", sel['label'].tolist())
             selected_row = sel[sel['label'] == target].iloc[0]
         else:
-            st.warning("선택 가능한 재고가 없습니다. (본점 재고만 있거나 검색 결과가 없음)")
+            st.warning("선택 가능한 재고가 없습니다. (본점 외 재고 없음)")
 
     with st.form("outbound_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
@@ -126,19 +137,10 @@ if st.session_state.user_role == "AZS" and not df.empty:
 
         if st.form_submit_button("등록하기"):
             if selected_row is not None and client:
-                # 시트 저장 (F열 데이터는 원본 소비기한 사용)
-                save_data = [
-                    str(o_date), manager, client, 
-                    selected_row['_품목'] if '_품목' in selected_row else selected_row.iloc[0], 
-                    selected_row['_브랜드'], amt, selected_row['_소비'], 
-                    "", "", "", "", 
-                    "이체" if is_trans else "", 
-                    memo
-                ]
+                # 시트 저장 (F열 원본 날짜 사용)
+                row = [str(o_date), manager, client, selected_row['품목'], selected_row['브랜드'], amt, selected_row['_full_expiry'], "", "", "", "", "이체" if is_trans else "", memo]
                 try:
-                    save_outbound(save_data)
-                    st.success("✅ 등록 완료!")
-                    st.cache_data.clear()
+                    save_outbound(row)
+                    st.success("✅ 등록 성공!")
+                    st.cache_data.clear() # 캐시 즉시 삭제하여 데이터 갱신
                 except Exception as e: st.error(f"저장 실패: {e}")
-            else:
-                st.error("입력 정보를 다시 확인해주세요.")
