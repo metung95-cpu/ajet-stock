@@ -34,14 +34,16 @@ if 'logged_in' not in st.session_state:
 if not st.session_state.logged_in:
     st.title("🔐 에이젯 재고관리 로그인")
     user_id = st.text_input("아이디 (AZ 또는 AZS)")
-    password = st.text_input("비밀번호", type="0983")
+    # type="password"로 설정해야 입력 시 글자가 가려집니다.
+    password = st.text_input("비밀번호", type="password") 
+    
     if st.button("로그인"):
-        # 기존에 설정했던 비밀번호를 입력하세요
-        if user_id == "AZ" and password == "0348": # 예시 비밀번호
+        # 요청하신 비밀번호 설정: AZ(5835), AZS(0983)
+        if user_id == "AZ" and password == "5835":
             st.session_state.logged_in = True
             st.session_state.user_role = "AZ"
             st.rerun()
-        elif user_id == "AZS" and password == "0348": # 예시 비밀번호
+        elif user_id == "AZS" and password == "0983":
             st.session_state.logged_in = True
             st.session_state.user_role = "AZS"
             st.rerun()
@@ -68,7 +70,7 @@ filtered_df = df.copy()
 if search_name: filtered_df = filtered_df[filtered_df['품명'].str.contains(search_name, na=False)]
 if search_brand: filtered_df = filtered_df[filtered_df['브랜드'].str.contains(search_brand, na=False)]
 
-# AZS 계정은 '본점' 데이터 제외 로직 등 기존 규칙 적용
+# AZS 계정은 '본점' 데이터 제외 로직
 if st.session_state.user_role == "AZS":
     if '창고' in filtered_df.columns:
         filtered_df = filtered_df[filtered_df['창고'] != '본점']
@@ -84,6 +86,6 @@ if st.session_state.user_role == "AZS":
         manager = st.selectbox("담당자", ["신상명", "관리자", "기타"])
         client = st.text_input("거래처")
         amount = st.number_input("수량", min_value=1)
-        # 구글 시트 '출고증' 워크시트에 저장하는 로직이 여기에 들어갑니다.
         if st.form_submit_button("등록하기"):
+            # 여기에 구글 시트 저장 로직을 추가할 수 있습니다.
             st.success(f"{client} 출고 등록 완료!")
