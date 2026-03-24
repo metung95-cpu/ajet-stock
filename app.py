@@ -16,34 +16,42 @@ def get_gspread_client():
         credentials = Credentials.from_service_account_file('key.json', scopes=scope)
     return gspread.authorize(credentials)
 
-# --- 2. 데이터 로딩 (인덱스 기반 매핑) ---
+# --- 2. 데이터 로딩 (진단 기능 강화) ---
 @st.cache_data(ttl=60)
 def load_inventory():
     try:
         gc = get_gspread_client()
-        doc = gc.open('에이젯광주 운영독스')
-        worksheet = doc.worksheet('raw_운영부재고')
-        all_data = worksheet.get_all_values()
         
+        # [진단 1] 파일 열기
+        try:
+            doc = gc.open('에이젯광주 운영독스')
+        except Exception:
+            st.error("❌ 오류: '에이젯광주 운영독스' 파일을 찾을 수 없습니다. (파일 이름이나 공유 설정을 확인하세요)")
+            return pd.DataFrame()
+            
+        # [진단 2] 워크시트(탭) 열기
+        try:
+            worksheet = doc.worksheet('raw_운영부재고')
+        except Exception:
+            st.error("❌ 오류: 'raw_운영부재고' 탭을 찾을 수 없습니다. (탭 이름에 공백이 있는지 확인하세요)")
+            return pd.DataFrame()
+            
+        all_data = worksheet.get_all_values()
         if len(all_data) <= 1: return pd.DataFrame()
 
-        # 원본 헤더 무시하고 상명님 시트 위치(A, B, D, E, F)로 직접 매핑
         rows = all_data[1:]
         processed = []
         for r in rows:
-            # 칸이 부족할 경우 대비해 최소 6열(F열)까지 있는지 확인
             if len(r) < 6: continue
             
-            warehouse = r[4].strip() # E열: 창고명
-            item_name = r[0].strip() # A열: 품명
-            brand = r[1].strip()     # B열: 브랜드-등급-est
-            qty = r[3].strip()       # D열: 재고수량
-            expiry = r[5].strip()    # F열: 소비기한
+            # A(0):품명, B(1):브랜드, D(3):재고수량, E(4):창고명, F(5):소비기한
+            item_name = r[0].strip()
+            brand = r[1].strip()
+            qty = r[3].strip()
+            warehouse = r[4].strip()
+            expiry = r[5].strip()
             
-            # 날짜 축소 (2027.02.16 -> 27.02.16)
             short_exp = expiry[2:] if expiry.startswith("20") else expiry
-            
-            # 본점 정렬용 (본점이면 1, 아니면 0)
             is_bonjum = 1 if "본점" in warehouse else 0
             
             processed.append({
@@ -59,7 +67,7 @@ def load_inventory():
             
         return pd.DataFrame(processed)
     except Exception as e:
-        st.error(f"데이터 연결 오류: {e}")
+        st.error(f"⚠️ 시스템 연결 오류: {e}")
         return pd.DataFrame()
 
 # --- 3. 출고 저장 ---
@@ -96,10 +104,10 @@ if not df.empty:
     if f_name: v_df = v_df[v_df['품목'].str.contains(f_name, na=False, case=False)]
     if f_brand: v_df = v_df[v_df['브랜드'].str.contains(f_brand, na=False, case=False)]
 
-    # [중요] 정렬: 본점 여부(0->1) -> 브랜드 -> 소비기한 순
+    # 본점은 무조건 맨 아래로 (0: 타창고, 1: 본점)
     v_df = v_df.sort_values(by=['_is_bonjum', '브랜드', '_date_sort'])
     
-    # [중요] 상명님이 요청하신 순서대로 열 배치
+    # [요청하신 순서] 품목 - 브랜드 - 재고 - 창고 - 소비기한
     display_cols = ['품목', '브랜드', '재고', '창고', '소비기한']
     st.dataframe(v_df[display_cols], use_container_width=True, hide_index=True)
 
@@ -112,17 +120,17 @@ if st.session_state.user_role == "AZS" and not df.empty:
     
     selected_row = None
     if item_query:
-        # [핵심] 출고 등록에서는 본점(_is_bonjum == 1)을 아예 제거
+        # 본점(_is_bonjum == 1)은 아예 필터링해서 제거
         sel = df[(df['품목'].str.contains(item_query, na=False, case=False)) & (df['_is_bonjum'] == 0)]
         sel = sel.sort_values(by=['브랜드', '_date_sort'])
         
         if not sel.empty:
-            # 포맷: 소비기한 / 품목 / 브랜드 / 재고 / 창고
+            # 드롭다운 형식: 소비기한 / 품목 / 브랜드 / 재고 / 창고
             sel['label'] = sel.apply(lambda x: f"{x['소비기한']} / {x['품목']} / {x['브랜드']} / {x['재고']} / {x['창고']}", axis=1)
             target = st.selectbox("재고 선택 (본점 제외됨)", sel['label'].tolist())
             selected_row = sel[sel['label'] == target].iloc[0]
         else:
-            st.warning("선택 가능한 재고가 없습니다. (본점 외 재고 없음)")
+            st.warning("선택 가능한 재고가 없습니다.")
 
     with st.form("outbound_form", clear_on_submit=True):
         c1, c2 = st.columns(2)
@@ -137,10 +145,9 @@ if st.session_state.user_role == "AZS" and not df.empty:
 
         if st.form_submit_button("등록하기"):
             if selected_row is not None and client:
-                # 시트 저장 (F열 원본 날짜 사용)
                 row = [str(o_date), manager, client, selected_row['품목'], selected_row['브랜드'], amt, selected_row['_full_expiry'], "", "", "", "", "이체" if is_trans else "", memo]
                 try:
                     save_outbound(row)
                     st.success("✅ 등록 성공!")
-                    st.cache_data.clear() # 캐시 즉시 삭제하여 데이터 갱신
+                    st.cache_data.clear() 
                 except Exception as e: st.error(f"저장 실패: {e}")
