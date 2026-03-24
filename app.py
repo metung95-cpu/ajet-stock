@@ -17,8 +17,8 @@ def get_gspread_client():
         credentials = Credentials.from_service_account_file('key.json', scopes=scope)
     return gspread.authorize(credentials)
 
-# --- 2. 데이터 로딩 (공간 절약형) ---
-@st.cache_data(ttl=120) # 2분마다 자동 갱신
+# --- 2. 데이터 로딩 (본점 완전 제거 및 정렬) ---
+@st.cache_data(ttl=60) 
 def load_inventory():
     try:
         gc = get_gspread_client()
@@ -26,35 +26,37 @@ def load_inventory():
         worksheet = doc.worksheet('raw_운영부재고')
         data = worksheet.get_all_values()
         
-        # 데이터가 비어있는지 확인
         if len(data) <= 1:
             return pd.DataFrame()
 
+        # 데이터프레임 생성 및 제목 공백 제거
         df = pd.DataFrame(data[1:], columns=data[0])
-        df.columns = df.columns.str.strip() # 제목 공백 제거
+        df.columns = df.columns.str.strip()
         
-        # 열 위치 기반 매핑 (A:0, B:1, D:3, E:4, F:5)
-        # 만약 시트 위치가 바뀌면 숫자만 수정하면 됩니다.
-        df['temp_품목'] = df.iloc[:, 0]    # A열
-        df['temp_브랜드'] = df.iloc[:, 1]  # B열
-        df['temp_재고량'] = df.iloc[:, 3]  # D열 (수량)
-        df['temp_창고'] = df.iloc[:, 4]    # E열
-        df['temp_소비기한'] = df.iloc[:, 5] # F열
+        # 열 위치 기반 매핑 (A:품목, B:브랜드, D:수량, E:창고, F:소비기한)
+        df['temp_품목'] = df.iloc[:, 0].str.strip()
+        df['temp_브랜드'] = df.iloc[:, 1].str.strip()
+        df['temp_재고량'] = df.iloc[:, 3].str.strip()
+        df['temp_창고'] = df.iloc[:, 4].str.strip()
+        df['temp_소비기한'] = df.iloc[:, 5].str.strip()
         
-        # [본점 제외]
+        # [핵심] 모든 기능에서 '본점' 재고를 완전히 제거
         df = df[df['temp_창고'] != '본점']
         
-        # [날짜 축소] 2027.01.01 -> 27.01.01
-        def shorten_date(d):
-            d = str(d).strip()
-            return d[2:] if d.startswith('20') else d
+        # [날짜 축소] 2026.11.20 -> 26.11.20
+        def format_date(d):
+            d = str(d).replace('-', '.').replace('/', '.')
+            parts = d.split('.')
+            if len(parts) == 3 and len(parts[0]) == 4:
+                return f"{parts[0][2:]}.{parts[1]}.{parts[2]}"
+            return d
         
-        df['temp_소비기한_short'] = df['temp_소비기한'].apply(shorten_date)
+        df['temp_소비기한_short'] = df['temp_소비기한'].apply(format_date)
         df['date_sort'] = pd.to_datetime(df['temp_소비기한'], errors='coerce').fillna(pd.Timestamp('2099-12-31'))
         
         return df
     except Exception as e:
-        st.error(f"데이터를 불러오는 중 오류 발생: {e}")
+        st.error(f"시트 데이터를 읽어오지 못했습니다: {e}")
         return pd.DataFrame()
 
 # --- 3. 출고 저장 ---
@@ -64,7 +66,7 @@ def save_outbound(data_list):
     sheet = doc.get_worksheet(0)
     sheet.append_row(data_list)
 
-# --- 로그인 ---
+# --- 로그인 세션 ---
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 if not st.session_state.logged_in:
     st.title("🔐 에이젯 재고관리 로그인")
@@ -77,34 +79,34 @@ if not st.session_state.logged_in:
             st.rerun()
     st.stop()
 
-# 데이터 불러오기
+# 데이터 원본 확보 (여기서 본점은 이미 다 빠짐)
 df = load_inventory()
 
-# --- 4. 실시간 재고 현황 (표 복구 완료) ---
+# --- 4. 실시간 재고 현황 표 (중복 필터링) ---
 st.title("📦 에이젯 실시간 재고 현황")
 
 if df.empty:
-    st.warning("데이터가 없거나 불러오지 못했습니다. 시트 이름을 확인해주세요.")
+    st.warning("현재 표시할 재고 데이터가 없습니다. 시트 상태를 확인해 주세요.")
 else:
     col_t1, col_t2 = st.columns(2)
-    with col_t1: f_name = st.text_input("🔍 품명 검색 (필터링)", "")
-    with col_t2: f_brand = st.text_input("🔍 브랜드 검색 (필터링)", "")
+    with col_t1: f_name = st.text_input("🔍 품명 검색", "")
+    with col_t2: f_brand = st.text_input("🔍 브랜드 검색", "")
 
-    view_df = df.copy()
     # 중복 필터링 (품명 AND 브랜드)
+    view_df = df.copy()
     if f_name: view_df = view_df[view_df['temp_품목'].str.contains(f_name, na=False, case=False)]
     if f_brand: view_df = view_df[view_df['temp_브랜드'].str.contains(f_brand, na=False, case=False)]
 
+    # 브랜드 묶음 & 소비기한 순 정렬
     view_df = view_df.sort_values(by=['temp_브랜드', 'date_sort'])
 
-    # 표 표시용 정리 (불필요한 열 제외)
-    # 제목: 소비기한 | 브랜드 | 품명 | 재고 | 창고
-    display_df = view_df[['temp_소비기한_short', 'temp_브랜드', 'temp_품목', 'temp_재고량', 'temp_창고']]
-    display_df.columns = ['소비기한', '브랜드', '품명', '재고', '창고']
+    # 표 표시용 정리
+    display_df = view_df[['temp_소비기한_short', 'temp_품목', 'temp_브랜드', 'temp_재고량', 'temp_창고']]
+    display_df.columns = ['소비기한', '품목', '브랜드', '재고', '창고']
 
     st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-# --- 5. 출고 등록 (글자 수 최적화) ---
+# --- 5. 출고 등록 (본점 차단 및 포맷 적용) ---
 if st.session_state.user_role == "AZS" and not df.empty:
     st.markdown("---")
     st.subheader("📝 출고 등록")
@@ -113,15 +115,16 @@ if st.session_state.user_role == "AZS" and not df.empty:
     
     selected_row = None
     if item_query:
+        # 본점이 제거된 df에서 필터링
         selection = df[df['temp_품목'].str.contains(item_query, na=False, case=False)]
         selection = selection.sort_values(by=['temp_브랜드', 'date_sort'])
         
         if not selection.empty:
-            # [수정] 수량:15 -> 15 / 간격 좁혀서 창고명 확보
+            # [요청 포맷] 26.11.20 / 삼겹양지 / 브랜드 / 수량 / 창고
             selection['display_label'] = selection.apply(
-                lambda x: f"{x['temp_소비기한_short']} {x['temp_품목']} {x['temp_브랜드']} {x['temp_재고량']} {x['temp_창고']}", axis=1
+                lambda x: f"{x['temp_소비기한_short']} / {x['temp_품목']} / {x['temp_브랜드']} / {x['temp_재고량']} / {x['temp_창고']}", axis=1
             )
-            target_label = st.selectbox("재고 선택 (소비기한순)", selection['display_label'].tolist())
+            target_label = st.selectbox("재고 선택", selection['display_label'].tolist())
             selected_row = selection[selection['display_label'] == target_label].iloc[0]
         else:
             st.warning("검색된 재고가 없습니다.")
@@ -150,7 +153,7 @@ if st.session_state.user_role == "AZS" and not df.empty:
                 try:
                     save_outbound(row)
                     st.success(f"✅ [{selected_row['temp_품목']}] {amount}건 등록 완료!")
-                    st.cache_data.clear() # 즉시 갱신
+                    st.cache_data.clear() 
                 except Exception as e: st.error(f"실패: {e}")
             else:
                 st.error("품목 선택과 거래처 입력이 필요합니다.")
