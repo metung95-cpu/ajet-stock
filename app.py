@@ -18,25 +18,27 @@ def get_gspread_client():
     return gspread.authorize(credentials)
 
 # --- 데이터 로딩 ---
-@st.cache_data(ttl=300) # 5분마다 갱신
+@st.cache_data(ttl=300)
 def load_inventory():
     gc = get_gspread_client()
     doc = gc.open('에이젯광주 운영독스')
     worksheet = doc.worksheet('raw_운영부재고')
     data = worksheet.get_all_values()
     df = pd.DataFrame(data[1:], columns=data[0])
-    df.columns = df.columns.str.strip() # 공백 제거
+    df.columns = df.columns.str.strip()
     
-    # 소비기한/유통기한 컬럼 자동 찾기
-    e_col = next((c for c in ['소비기한', '유통기한', '만료일'] if c in df.columns), df.columns[0])
-    p_col = next((c for c in ['품명', '품목', '상품명'] if c in df.columns), df.columns[0])
-    b_col = next((c for c in ['브랜드', '메이커'] if c in df.columns), df.columns[1])
+    # 필수 컬럼 탐색 및 이름 통일
+    e_col = next((c for c in ['소비기한', '유통기한'] if c in df.columns), df.columns[0])
+    p_col = next((c for c in ['품명', '품목'] if c in df.columns), df.columns[1])
+    b_col = next((c for c in ['브랜드', '메이커'] if c in df.columns), df.columns[2])
+    q_col = next((c for c in ['재고수량', '재고량', '수량'] if c in df.columns), df.columns[3])
+    w_col = next((c for c in ['창고명', '창고'] if c in df.columns), df.columns[4])
 
-    # 날짜 정렬용 임시 컬럼
+    # 날짜 정렬용 데이터
     df['date_sort'] = pd.to_datetime(df[e_col], errors='coerce').fillna(pd.Timestamp('2099-12-31'))
     
-    # 이름 통일
-    df = df.rename(columns={p_col: '품명', b_col: '브랜드', e_col: '소비기한'})
+    # 사용하기 편하게 이름 변경
+    df = df.rename(columns={p_col: '품명', b_col: '브랜드', e_col: '소비기한', q_col: '재고량', w_col: '창고'})
     return df
 
 # --- 출고 저장 함수 ---
@@ -46,7 +48,7 @@ def save_outbound(data_list):
     sheet = doc.get_worksheet(0)
     sheet.append_row(data_list)
 
-# --- 로그인 (AZ: 5835 / AZS: 0983) ---
+# --- 로그인 시스템 ---
 if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 if not st.session_state.logged_in:
     st.title("🔐 에이젯 재고관리 로그인")
@@ -57,44 +59,55 @@ if not st.session_state.logged_in:
             st.session_state.logged_in = True
             st.session_state.user_role = u_id
             st.rerun()
-        else: st.error("로그인 정보가 틀렸습니다.")
+        else: st.error("로그인 정보 오류")
     st.stop()
 
-# --- 메인 로직 ---
+# --- 데이터 불러오기 ---
 df = load_inventory()
 
+# --- 1. 상단 실시간 재고 현황 (검색 필터 활성화) ---
 st.title("📦 에이젯 실시간 재고 현황")
-st.dataframe(df.drop(columns=['date_sort']), use_container_width=True, hide_index=True)
 
-# --- 출고 등록 (AZS 전용) ---
+col_s1, col_s2 = st.columns(2)
+with col_s1: top_search_name = st.text_input("🔍 품명으로 표 필터링", "")
+with col_s2: top_search_brand = st.text_input("🔍 브랜드로 표 필터링", "")
+
+view_df = df.copy()
+if top_search_name: view_df = view_df[view_df['품명'].str.contains(top_search_name, na=False, case=False)]
+if top_search_brand: view_df = view_df[view_df['브랜드'].str.contains(top_search_brand, na=False, case=False)]
+
+# AZS는 본점 데이터 제외
+if st.session_state.user_role == "AZS":
+    if '창고' in view_df.columns: view_df = view_df[view_df['창고'] != '본점']
+
+st.dataframe(view_df.drop(columns=['date_sort']), use_container_width=True, hide_index=True)
+
+# --- 2. 출고 등록 (AZS 전용) ---
 if st.session_state.user_role == "AZS":
     st.markdown("---")
-    st.subheader("📝 출고 등록 (선입선출)")
+    st.subheader("📝 출고 등록 (브랜드별 묶음 & 소비기한순)")
     
-    # 1. 품목 검색 (여기서 검색어를 쳐야 아래 드롭다운에 재고가 뜹니다!)
-    item_query = st.text_input("출고할 품목 검색 (예: 삼겹양지)", placeholder="품명을 입력하면 아래 드롭다운에 목록이 나타납니다.")
+    item_query = st.text_input("출고할 품목 검색 (예: 삼겹)", placeholder="품명을 입력하면 아래 드롭다운에 목록이 나타납니다.")
     
     selected_row = None
     if item_query:
-        # 대소문자 구분 없이 검색어 포함된 재고 필터링 + 소비기한순 정렬
-        selection = df[df['품명'].str.contains(item_query, na=False, case=False)].sort_values('date_sort')
+        # 검색 필터링 + 브랜드별로 묶고 그 안에서 소비기한 순으로 정렬
+        selection = df[df['품명'].str.contains(item_query, na=False, case=False)].sort_values(['브랜드', 'date_sort'])
         
         if not selection.empty:
-            # 드롭다운에 표시할 텍스트 구성
-            selection['label'] = selection.apply(lambda x: f"[{x['소비기한']}] {x['품명']} | {x['브랜드']}", axis=1)
-            target_label = st.selectbox("재고 선택 (소비기한 임박순)", selection['label'].tolist())
-            selected_row = selection[selection['label'] == target_label].iloc[0]
+            # 요청하신 형식: 소비기한 브랜드 품명 / 재고수량 / 창고명
+            selection['display_label'] = selection.apply(
+                lambda x: f"{x['소비기한']} {x['브랜드']} {x['품명']} / {x['재고량']} / {x['창고']}", axis=1
+            )
+            target_label = st.selectbox("정확한 재고 선택", selection['display_label'].tolist())
+            selected_row = selection[selection['display_label'] == target_label].iloc[0]
         else:
-            st.warning("⚠️ 해당 품명의 재고가 없습니다. 검색어를 다시 확인해 주세요.")
-    else:
-        st.info("💡 위 칸에 품명을 입력하시면 선택 가능한 재고 목록이 드롭다운으로 나타납니다.")
+            st.warning("검색된 재고가 없습니다.")
 
-    # 2. 출고 정보 입력 폼
     with st.form("outbound_form", clear_on_submit=True):
         f_col1, f_col2 = st.columns(2)
         with f_col1:
             o_date = st.date_input("출고일", datetime.now())
-            # 요청하신 담당자 순서 반영
             manager = st.selectbox("담당자", ["박정운", "강경현", "송광훈", "정기태", "김미남", "신상명", "백윤주"])
             client = st.text_input("거래처")
         with f_col2:
@@ -104,7 +117,8 @@ if st.session_state.user_role == "AZS":
 
         if st.form_submit_button("등록하기"):
             if selected_row is not None and client:
-                row = [
+                # 시트 전송 데이터 (A~M열 순서)
+                row_to_save = [
                     str(o_date), manager, client, 
                     selected_row['품명'], selected_row['브랜드'], 
                     amount, selected_row['소비기한'],
@@ -113,9 +127,9 @@ if st.session_state.user_role == "AZS":
                     comments # M열
                 ]
                 try:
-                    save_outbound(row)
-                    st.success(f"✅ {selected_row['품명']} 등록 완료!")
-                    st.cache_data.clear() # 재고 갱신
+                    save_outbound(row_to_save)
+                    st.success(f"✅ [{selected_row['품명']}] 등록 완료!")
+                    st.cache_data.clear() # 재고 즉시 갱신
                 except Exception as e: st.error(f"저장 실패: {e}")
             else:
-                st.error("⚠️ 품목 선택과 거래처 입력은 필수입니다.")
+                st.error("품목 선택과 거래처 입력을 확인해 주세요.")
