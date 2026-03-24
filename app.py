@@ -17,7 +17,7 @@ def get_gspread_client():
         credentials = Credentials.from_service_account_file('key.json', scopes=scope)
     return gspread.authorize(credentials)
 
-# --- 2. 데이터 로딩 ---
+# --- 2. 데이터 로딩 (날짜 축소 및 본점 제외) ---
 @st.cache_data(ttl=300)
 def load_inventory():
     gc = get_gspread_client()
@@ -28,17 +28,26 @@ def load_inventory():
     df = pd.DataFrame(data[1:], columns=data[0])
     df.columns = df.columns.str.strip()
     
-    # 열 위치 기반 매핑 (A=품목, B=브랜드, E=창고, F=소비기한)
+    # 열 위치 기반 매핑 (A=품목, B=브랜드, D=수량, E=창고, F=소비기한)
     df['temp_품목'] = df.iloc[:, 0]    # A열
     df['temp_브랜드'] = df.iloc[:, 1]  # B열
+    df['temp_재고량'] = df.iloc[:, 3]  # D열 (수량)
     df['temp_창고'] = df.iloc[:, 4]    # E열
     df['temp_소비기한'] = df.iloc[:, 5] # F열
     
-    # 소비기한 정렬용 (F열 기준)
-    df['date_sort'] = pd.to_datetime(df['temp_소비기한'], errors='coerce').fillna(pd.Timestamp('2099-12-31'))
+    # [본점 제외]
+    df = df[df['temp_창고'] != '본점']
     
-    # [핵심] '본점' 정렬용 플래그 (본점이면 1, 아니면 0) -> 정렬 시 0이 위, 1이 아래로 감
-    df['is_bonjum'] = (df['temp_창고'] == '본점').astype(int)
+    # [소비기한 날짜 축소] 2027.01.01 -> 27.01.01
+    def shorten_date(date_str):
+        if len(date_str) >= 10 and date_str.startswith('20'):
+            return date_str[2:] # 앞의 '20' 제거
+        return date_str
+    
+    df['temp_소비기한_short'] = df['temp_소비기한'].apply(shorten_date)
+    
+    # 정렬용 날짜
+    df['date_sort'] = pd.to_datetime(df['temp_소비기한'], errors='coerce').fillna(pd.Timestamp('2099-12-31'))
     
     return df
 
@@ -60,39 +69,30 @@ if not st.session_state.logged_in:
             st.session_state.logged_in = True
             st.session_state.user_role = u_id
             st.rerun()
-        else: st.error("정보 불일치")
     st.stop()
 
 df = load_inventory()
 
-# --- 4. 상단 실시간 재고 현황 (중복 필터링 + 본점 최하단) ---
+# --- 4. 실시간 재고 현황 (필터링 및 수량 표시) ---
 st.title("📦 에이젯 실시간 재고 현황")
 
-col_top1, col_top2 = st.columns(2)
-with col_top1: 
-    filter_name = st.text_input("🔍 품명 검색 (중복 필터링)", "")
-with col_top2: 
-    filter_brand = st.text_input("🔍 브랜드 검색 (중복 필터링)", "")
+col_t1, col_t2 = st.columns(2)
+with col_t1: f_name = st.text_input("🔍 품명 검색", "")
+with col_t2: f_brand = st.text_input("🔍 브랜드 검색", "")
 
 view_df = df.copy()
+if f_name: view_df = view_df[view_df['temp_품목'].str.contains(f_name, na=False, case=False)]
+if f_brand: view_df = view_df[view_df['temp_브랜드'].str.contains(f_brand, na=False, case=False)]
 
-# 중복 필터링 (품명 AND 브랜드)
-if filter_name:
-    view_df = view_df[view_df['temp_품목'].str.contains(filter_name, na=False, case=False)]
-if filter_brand:
-    view_df = view_df[view_df['temp_브랜드'].str.contains(filter_brand, na=False, case=False)]
+view_df = view_df.sort_values(by=['temp_브랜드', 'date_sort'])
 
-# [반영] 정렬: 본점 여부(0부터) -> 소비기한 순
-view_df = view_df.sort_values(by=['is_bonjum', 'date_sort'])
+# [표시용 데이터프레임 정리] 필요한 항목만 남기기
+display_df = view_df[['temp_소비기한_short', 'temp_브랜드', 'temp_품목', 'temp_재고량', 'temp_창고']]
+display_df.columns = ['소비기한', '브랜드', '품명', '재고수량', '창고']
 
-# AZS 권한에서 본점 숨김 해제 여부는 상명님 의도에 따라 유지 또는 삭제 가능
-# 현재는 "본점을 맨 아래로 보내달라"고 하셨으므로 모든 사용자가 본점 데이터를 보되 맨 아래에서 보도록 설정했습니다.
-# 만약 AZS가 여전히 본점을 보면 안 된다면 아래 주석을 해제하세요.
-# if st.session_state.user_role == "AZS": view_df = view_df[view_df['temp_창고'] != '본점']
+st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-st.dataframe(view_df.drop(columns=['date_sort', 'is_bonjum', 'temp_품목', 'temp_브랜드', 'temp_창고', 'temp_소비기한']), use_container_width=True, hide_index=True)
-
-# --- 5. 출고 등록 (본점 최하단 + 상세 포맷) ---
+# --- 5. 출고 등록 ---
 if st.session_state.user_role == "AZS":
     st.markdown("---")
     st.subheader("📝 출고 등록")
@@ -101,29 +101,26 @@ if st.session_state.user_role == "AZS":
     
     selected_row = None
     if item_query:
-        # 검색 필터링
         selection = df[df['temp_품목'].str.contains(item_query, na=False, case=False)]
-        
-        # [반영] 정렬 우선순위: 본점 여부(0->1) -> 브랜드명 -> 소비기한 순
-        selection = selection.sort_values(by=['is_bonjum', 'temp_브랜드', 'date_sort'])
+        selection = selection.sort_values(by=['temp_브랜드', 'date_sort'])
         
         if not selection.empty:
-            # [반영] 드롭다운 포맷: F열(소비기한) / A열(품목) / B열(브랜드) / E열(창고)
+            # 드롭다운 라벨: 27.01.01 / 품목 / 브랜드 / 수량 / 창고
             selection['display_label'] = selection.apply(
-                lambda x: f"{x['temp_소비기한']} / {x['temp_품목']} / {x['temp_브랜드']} / {x['temp_창고']}", axis=1
+                lambda x: f"{x['temp_소비기한_short']} / {x['temp_품목']} / {x['temp_브랜드']} / 수량:{x['temp_재고량']} / {x['temp_창고']}", axis=1
             )
-            target_label = st.selectbox("재고 선택 (본점 물량은 목록 최하단에 위치)", selection['display_label'].tolist())
+            target_label = st.selectbox("재고 선택 (소비기한순)", selection['display_label'].tolist())
             selected_row = selection[selection['display_label'] == target_label].iloc[0]
         else:
             st.warning("검색된 재고가 없습니다.")
 
     with st.form("outbound_form", clear_on_submit=True):
-        f_col1, f_col2 = st.columns(2)
-        with f_col1:
+        c1, c2 = st.columns(2)
+        with c1:
             o_date = st.date_input("출고일", datetime.now())
             manager = st.selectbox("담당자", ["박정운", "강경현", "송광훈", "정기태", "김미남", "신상명", "백윤주"])
             client = st.text_input("거래처")
-        with f_col2:
+        with c2:
             amount = st.number_input("수량", min_value=1, step=1)
             is_transfer = st.checkbox("이체 여부 (L열)")
             comments = st.text_input("변경사항 (M열)")
@@ -140,6 +137,6 @@ if st.session_state.user_role == "AZS":
                 ]
                 try:
                     save_outbound(row)
-                    st.success(f"✅ [{selected_row['temp_품목']}] 등록 완료!")
+                    st.success(f"✅ [{selected_row['temp_품목']}] {amount}개 등록 완료!")
                     st.cache_data.clear()
                 except Exception as e: st.error(f"실패: {e}")
