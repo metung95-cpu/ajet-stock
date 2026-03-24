@@ -34,7 +34,7 @@ if 'logged_in' not in st.session_state:
 if not st.session_state.logged_in:
     st.title("🔐 에이젯 재고관리 로그인")
     user_id = st.text_input("아이디 (AZ 또는 AZS)")
-    password = st.text_input("비밀번호", type="password")
+    password = st.text_input("비밀번호", type="0983")
     if st.button("로그인"):
         # 기존에 설정했던 비밀번호를 입력하세요
         if user_id == "AZ" and password == "0348": # 예시 비밀번호
