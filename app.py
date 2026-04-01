@@ -147,3 +147,80 @@ if not df.empty:
         st.header("🚚 출고 등록")
 
         sc1, sc2 = st.columns(2)
+        r_item = sc1.text_input("🔍 품목 필터", key="r_i")
+        r_brand = sc2.text_input("🏢 브랜드 필터", key="r_b")
+
+        t_df = f_df.copy().reset_index(drop=True)
+        if r_item: t_df = t_df[t_df['품명'].str.contains(r_item, na=False)]
+        if r_brand: t_df = t_df[t_df['브랜드'].str.contains(r_brand, na=False, case=False)]
+
+        if '소비기한' in t_df.columns:
+            t_df = t_df.sort_values(by='소비기한', ascending=True)
+
+        if not t_df.empty:
+            opts = t_df.apply(lambda x: f"[{x.get('창고명','미지정')}] {x['품명']} / {x['브랜드']} (재고: {x.get('재고수량','0')}) [소비기한: {x.get('소비기한','')}]", axis=1)
+            sel_idx = st.selectbox("출고 품목 선택 (소비기한 임박순)", opts.index, format_func=lambda i: opts[i])
+            row = t_df.loc[sel_idx]
+
+            try:
+                stock_val = str(row.get('재고수량', '0')).replace(',', '')
+                available_stock = float(stock_val) if stock_val else 0.0
+            except:
+                available_stock = 0.0
+
+            with st.form("out_form"):
+                f1, f2, f3 = st.columns(3)
+                
+                out_date = f1.date_input("출고일", datetime.now())
+                manager = f1.selectbox("담당자", MANAGERS)
+                client_name = f1.text_input("거래처")
+
+                changes = f2.text_input("변경사항", placeholder="변경사항을 입력하세요")
+
+                qty = f3.number_input("수량", min_value=1, step=1, value=1)
+                price = f3.number_input("단가", min_value=0, step=100)
+                is_trans = f3.checkbox("이체 여부 (체크 시 L열 입력)", value=False)
+
+                if st.form_submit_button("출고 등록하기", type="primary"):
+                    if float(qty) > available_stock:
+                        st.error(f"❌ 재고가 부족합니다. (현재 재고: {available_stock})")
+                    elif not client_name:
+                        st.error("❌ 거래처를 입력해주세요.")
+                    else:
+                        try:
+                            creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], ['https://www.googleapis.com/auth/drive', 'https://www.googleapis.com/auth/spreadsheets'])
+                            gc = gspread.authorize(creds)
+                            out_sh = gc.open_by_key('1xdRllSZ0QTS_h8-HNbs0RqFja9PKnklYon7xrKDHTbo').worksheet('출고증')
+
+                            target_date = f"{out_date.month}. {out_date.day}"
+                            vals = out_sh.get_all_values()
+                            target_idx = -1
+
+                            for i, r in enumerate(vals, 1):
+                                if len(r) > 2 and str(r[2]).strip() == target_date:
+                                    if len(r) <= 3 or str(r[3]).strip() == "":
+                                        target_idx = i
+                                        break
+
+                            if target_idx != -1:
+                                data = [
+                                    str(manager),               
+                                    str(client_name),           
+                                    str(row['품명']),            
+                                    str(row['브랜드']),          
+                                    str(row.get('BL넘버','-')), 
+                                    int(qty),                   
+                                    str(row.get('창고명','')),   
+                                    int(price),                 
+                                    "이체" if is_trans else "",  
+                                    str(changes)                
+                                ]
+                                out_sh.update(range_name=f"D{target_idx}:M{target_idx}", values=[data], value_input_option='USER_ENTERED')
+                                st.success(f"✅ {target_date} / {target_idx}행 등록 완료! (이체/변경사항 포함)")
+                                st.session_state['last_activity'] = datetime.now()
+                            else:
+                                st.error(f"❌ '{target_date}' 날짜의 빈 행이 없습니다. 구글 시트를 확인해 주세요.")
+                        except Exception as e:
+                            st.error(f"🚨 시스템 오류가 발생했습니다: {e}")
+        else:
+            st.warning("검색 결과가 없습니다.")
