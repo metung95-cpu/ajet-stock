@@ -4,7 +4,6 @@ from datetime import datetime, timedelta
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import extra_streamlit_components as stx
-import time
 
 # ------------------------------------------------------------------
 # 1. 기본 설정 및 스타일
@@ -28,42 +27,26 @@ if 'last_activity' not in st.session_state:
     st.session_state['last_activity'] = datetime.now()
 
 # ------------------------------------------------------------------
-# 2. 쿠키 기반 로그인 시스템 (철통 방어 로직)
+# 2. 쿠키 기반 로그인 시스템 (새로고침 없이 완벽 저장)
 # ------------------------------------------------------------------
 cookie_manager = stx.CookieManager()
-
-if 'auth_checked' not in st.session_state:
-    st.session_state['auth_checked'] = True
-    time.sleep(0.5)
-    st.rerun()
-
 cookie_val = cookie_manager.get(COOKIE_NAME)
 
 if cookie_val and not st.session_state['logged_in']:
     st.session_state['logged_in'] = True
     st.session_state['user_id'] = cookie_val
-    st.session_state['last_activity'] = datetime.now()
 
 if st.session_state['logged_in']:
     elapsed = (datetime.now() - st.session_state.get('last_activity', datetime.now())).total_seconds()
-    if elapsed > 28800: 
+    if elapsed > 28800: # 8시간(28800초) 초과 시 삭제
         cookie_manager.delete(COOKIE_NAME)
         st.session_state['logged_in'] = False
         st.warning("🔒 8시간이 지나 자동 로그아웃되었습니다.")
-        time.sleep(1)
-        st.rerun()
     else:
         st.session_state['last_activity'] = datetime.now()
 
-def logout():
-    cookie_manager.delete(COOKIE_NAME)
-    st.session_state['logged_in'] = False
-    st.session_state['user_id'] = None
-    time.sleep(1) 
-    st.rerun()
-
 # ------------------------------------------------------------------
-# 3. 로그인 화면 (데이터 접근 차단)
+# 3. 로그인 화면
 # ------------------------------------------------------------------
 if not st.session_state['logged_in']:
     st.title("🔒 에이젯 재고관리 로그인")
@@ -77,27 +60,31 @@ if not st.session_state['logged_in']:
             password = i_pw.strip()
             
             if username in USERS and USERS[username] == password:
+                # [핵심] 8시간짜리 쿠키 저장 명령 (st.rerun을 없애서 확실히 저장되게 함)
                 expire_date = datetime.now() + timedelta(hours=8)
                 cookie_manager.set(COOKIE_NAME, username, expires_at=expire_date)
                 
                 st.session_state['logged_in'] = True
                 st.session_state['user_id'] = username
                 st.session_state['last_activity'] = datetime.now()
-                
-                st.success("✅ 로그인 성공! (8시간 동안 유지됩니다. 잠시만 기다려주세요...)")
-                time.sleep(1.5) 
-                st.rerun()
             else:
                 st.error("❌ 아이디 또는 비밀번호를 확인하세요.")
-    st.stop() 
+    
+    # 로그인 실패 시 여기서 화면 멈춤 (메인 화면 보호)
+    if not st.session_state['logged_in']:
+        st.stop()
 
-# ------------------------------------------------------------------
-# 4. 메인 화면 시작 (사이드바)
-# ------------------------------------------------------------------
+# ==================================================================
+# 4. 메인 화면 시작 (로그인 성공 시 여기서부터 렌더링)
+# ==================================================================
 with st.sidebar:
     st.write(f"👤 **{st.session_state['user_id']}**님 접속 중")
     if st.button("로그아웃"):
-        logout()
+        cookie_manager.delete(COOKIE_NAME)
+        st.session_state['logged_in'] = False
+        st.session_state['user_id'] = None
+        st.success("✅ 로그아웃 되었습니다. 화면을 새로고침 해주세요.")
+        st.stop()
 
 @st.cache_data(ttl=60)
 def load_data():
