@@ -102,7 +102,9 @@ def load_data():
         sh = client.open('에이젯광주 운영독스').worksheet('raw_운영부재고')
         df = pd.DataFrame(sh.get_all_records())
         df.rename(columns={'B/L NO':'BL넘버','식별번호':'BL넘버','B/L NO,식별번호':'BL넘버','브랜드-등급-est':'브랜드'}, inplace=True)
-        return df.applymap(lambda x: str(x).strip() if x else "")
+        
+        # .applymap 대신 .map을 사용하여 최신 판다스 버전에 대응합니다.
+        return df.map(lambda x: str(x).strip() if x else "")
     except Exception as e:
         st.error(f"데이터 로드 실패: {e}")
         return pd.DataFrame()
