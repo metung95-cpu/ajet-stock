@@ -28,10 +28,15 @@ if 'last_activity' not in st.session_state:
     st.session_state['last_activity'] = datetime.now()
 
 # ------------------------------------------------------------------
-# 2. 쿠키 기반 로그인 시스템
+# 2. 쿠키 기반 로그인 시스템 (8시간 유지 완벽 적용)
 # ------------------------------------------------------------------
 cookie_manager = stx.CookieManager()
-time.sleep(0.1) 
+
+# [핵심] 첫 접속 시 쿠키를 읽어올 시간을 벌어주는 강제 새로고침
+if 'cookies_loaded' not in st.session_state:
+    st.session_state['cookies_loaded'] = True
+    time.sleep(0.3)
+    st.rerun()
 
 # 브라우저 쿠키 확인 후 로그인 유지
 if not st.session_state['logged_in']:
@@ -41,7 +46,7 @@ if not st.session_state['logged_in']:
         st.session_state['user_id'] = cookie_val
         st.rerun()
 
-# 8시간 자동 로그아웃 체크
+# 8시간(28800초) 자동 로그아웃 체크
 if st.session_state['logged_in']:
     elapsed = (datetime.now() - st.session_state.get('last_activity', datetime.now())).total_seconds()
     if elapsed > 28800:
@@ -58,8 +63,11 @@ def login_check(username, password):
         st.session_state['logged_in'] = True
         st.session_state['user_id'] = username
         st.session_state['last_activity'] = datetime.now()
+        
+        # 브라우저 쿠키 만료일 8시간 후로 설정
         expire_date = datetime.now() + timedelta(hours=8)
         cookie_manager.set(COOKIE_NAME, username, expires_at=expire_date)
+        
         st.success("✅ 로그인 성공! (8시간 동안 유지됩니다)")
         time.sleep(1)
         st.rerun()
@@ -103,7 +111,7 @@ def load_data():
         df = pd.DataFrame(sh.get_all_records())
         df.rename(columns={'B/L NO':'BL넘버','식별번호':'BL넘버','B/L NO,식별번호':'BL넘버','브랜드-등급-est':'브랜드'}, inplace=True)
         
-        # .applymap 대신 .map을 사용하여 최신 판다스 버전에 대응합니다.
+        # [핵심] 판다스 최신 버전 대응 (.map 사용)
         return df.map(lambda x: str(x).strip() if x else "")
     except Exception as e:
         st.error(f"데이터 로드 실패: {e}")
@@ -177,12 +185,13 @@ if not df.empty:
                 changes = f2.text_input("변경사항", placeholder="변경사항을 입력하세요")
 
                 # 오른쪽 (f3)
-                qty = f3.number_input("수량", min_value=1.0, step=1.0, value=1.0)
+                # [핵심] min_value=1, step=1 로 설정하여 소수점(.00)을 없애고 정수로만 표시
+                qty = f3.number_input("수량", min_value=1, step=1, value=1)
                 price = f3.number_input("단가", min_value=0, step=100)
                 is_trans = f3.checkbox("이체 여부 (체크 시 L열 입력)", value=False)
 
                 if st.form_submit_button("출고 등록하기", type="primary"):
-                    if qty > available_stock:
+                    if float(qty) > available_stock:
                         st.error(f"❌ 재고가 부족합니다. (현재 재고: {available_stock})")
                     elif not client_name:
                         st.error("❌ 거래처를 입력해주세요.")
