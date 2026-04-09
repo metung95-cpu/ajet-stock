@@ -155,18 +155,15 @@ with tab2:
     sorted_ym = sorted(df['연월'].unique())
     col3, col4, col5 = st.columns(3)
     
-    # [핵심 수정] 시작월(A) 기본값을 '2025-01'로 고정
     try:
         default_a_idx = sorted_ym.index('2025-01')
     except ValueError:
         default_a_idx = 0
     with col3: start_month_a = st.selectbox("시작월 (A) 선택", sorted_ym, index=default_a_idx, key="t2_base")
     
-    # [핵심 수정] 마지막월(B) 기본값을 전체 데이터의 최종 마지막월로 고정
     default_b_idx = len(sorted_ym) - 1 if len(sorted_ym) > 0 else 0
     with col4: end_month_b = st.selectbox("마지막월 (B) 선택", sorted_ym, index=default_b_idx, key="t2_target")
     
-    # 비교월(C) 기본값 설정
     default_c_idx = len(sorted_ym) - 1 if len(sorted_ym) > 0 else 0
     with col5: target_month_c = st.selectbox("비교월 선택", sorted_ym, index=default_c_idx, key="t2_target_c")
 
@@ -419,8 +416,13 @@ st.title("💵 오퍼가")
 
 if not df_offer.empty and '보정오퍼가' in df_offer.columns:
     col_o1, col_o2, col_o3 = st.columns(3)
-    with col_o1: off_year = st.selectbox("연 선택", ['전체'] + sorted(df_offer['연'].unique())) if '연' in df_offer.columns else '전체'
-    with col_o2: off_month = st.selectbox("월 선택", ['전체'] + sorted(df_offer['월'].unique())) if '월' in df_offer.columns else '전체'
+    
+    # [핵심 추가] 연도와 월을 숫자로 취급하여 오름차순(1월~12월) 정렬!
+    sorted_off_years = sorted(df_offer['연'].unique(), key=lambda x: int(x) if str(x).isdigit() else str(x)) if '연' in df_offer.columns else []
+    sorted_off_months = sorted(df_offer['월'].unique(), key=lambda x: int(x) if str(x).isdigit() else str(x)) if '월' in df_offer.columns else []
+    
+    with col_o1: off_year = st.selectbox("연 선택", ['전체'] + sorted_off_years) if '연' in df_offer.columns else '전체'
+    with col_o2: off_month = st.selectbox("월 선택", ['전체'] + sorted_off_months) if '월' in df_offer.columns else '전체'
     with col_o3: off_cat = st.selectbox("대분류 선택", ['전체'] + sorted(df_offer['대분류'].unique())) if '대분류' in df_offer.columns else '전체'
         
     col_o4, col_o5, col_o6 = st.columns(3)
