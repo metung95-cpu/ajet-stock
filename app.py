@@ -5,6 +5,7 @@ from google.oauth2.service_account import Credentials
 import json 
 from datetime import datetime
 import calendar
+import re
 
 st.set_page_config(page_title="검역량 & 오퍼가 대시보드", layout="wide")
 
@@ -155,12 +156,14 @@ with tab2:
     sorted_ym = sorted(df['연월'].unique())
     col3, col4, col5 = st.columns(3)
     
+    # 시작월 25년 1월 고정
     try:
         default_a_idx = sorted_ym.index('2025-01')
     except ValueError:
         default_a_idx = 0
     with col3: start_month_a = st.selectbox("시작월 (A) 선택", sorted_ym, index=default_a_idx, key="t2_base")
     
+    # 마지막월 데이터 최종월 고정
     default_b_idx = len(sorted_ym) - 1 if len(sorted_ym) > 0 else 0
     with col4: end_month_b = st.selectbox("마지막월 (B) 선택", sorted_ym, index=default_b_idx, key="t2_target")
     
@@ -218,23 +221,21 @@ with tab2:
         calc_cols = [c_col_name, '올해평균 - 비교월', '비교월 - 직전월', '작년평균 - 비교월', '작년동월 - 비교월']
         final_cols = ordered_cols + calc_cols
         
-        # [중요] 최댓값/최솟값 계산을 위해 숫자형 임시 데이터프레임 유지
+        # [복구 완] 원본 숫자 데이터를 복사해두어 최대/최소 계산에 사용
         temp_numeric_df = comp_pivot_full[range_months].copy()
 
         comp_pivot = comp_pivot_full[final_cols].reset_index()
+
         if selected_country_t2 == '전국가 합계':
             comp_pivot.insert(3, '국가별', '전국가 합계')
 
-        # 데이터 포맷팅 (정수형 콤마)
         for col in final_cols:
             comp_pivot[col] = pd.to_numeric(comp_pivot[col], errors='coerce').fillna(0).round(0).apply(lambda x: f"{x:,.0f}")
 
-        # --- [로직 핵심] 월별 검역량 최댓값(파랑)/최솟값(빨강) 강조 함수 ---
+        # [복구 완] 월별 최고치 파랑, 최저치 빨강 강조 스타일
         def color_min_max_month(row):
             styles = []
-            # 행 전체 인덱스에서 실제 월별 컬럼들에 해당하는 위치 찾기
-            row_idx_in_full = row.name # reset_index 된 상태의 행 번호
-            # 원본 숫자 데이터에서 해당 행의 max/min 찾기
+            row_idx_in_full = row.name 
             current_row_numeric = temp_numeric_df.iloc[row_idx_in_full]
             r_max = current_row_numeric.max()
             r_min = current_row_numeric.min()
@@ -242,16 +243,20 @@ with tab2:
             for col_name in row.index:
                 col_str = str(col_name)
                 
-                # 1. 월별 데이터 컬럼인 경우 (최고/최저 강조)
+                # 월별 데이터 기간이면 최대/최소 체크
                 if col_str in range_months:
-                    val = float(str(row[col_name]).replace(',', ''))
+                    try:
+                        val = float(str(row[col_name]).replace(',', ''))
+                    except:
+                        val = 0.0
                     if val == r_max and r_max != r_min:
-                        styles.append('background-color: #E3F2FD; color: #1565C0; font-weight: bold;') # 파란색 (최고)
+                        styles.append('background-color: #E3F2FD; color: #1565C0; font-weight: bold;') # 최고치 (파랑)
                     elif val == r_min and r_max != r_min:
-                        styles.append('background-color: #FFEBEE; color: #C62828; font-weight: bold;') # 빨간색 (최저)
+                        styles.append('background-color: #FFEBEE; color: #C62828; font-weight: bold;') # 최저치 (빨강)
                     else:
                         styles.append('')
-                # 2. 합계/평균/비교 컬럼들 (기존 스타일 유지)
+                
+                # 기타 합계/평균/차이값 로직
                 elif '합계' in col_str:
                     styles.append('background-color: #616161; color: #FFFFFF; font-weight: bold;') 
                 elif '평균' in col_str and '비교월' not in col_str:
@@ -259,14 +264,19 @@ with tab2:
                 elif col_str in calc_cols:
                     bg_color = 'background-color: #424242;' 
                     text_color = 'color: #FFFFFF;' 
-                    val_calc = float(str(row[col_name]).replace(',', ''))
                     
+                    try:
+                        val_calc = float(str(row[col_name]).replace(',', ''))
+                    except:
+                        val_calc = 0.0
+                        
                     if col_str == '비교월 - 직전월':
                         if val_calc > 0: text_color = 'color: #81D4FA;' 
                         elif val_calc < 0: text_color = 'color: #EF9A9A;' 
                     elif col_str in ['올해평균 - 비교월', '작년평균 - 비교월', '작년동월 - 비교월']:
                         if val_calc < 0: text_color = 'color: #81D4FA;' 
                         elif val_calc > 0: text_color = 'color: #EF9A9A;' 
+                    
                     styles.append(f'{bg_color} {text_color} font-weight: bold;')
                 else:
                     styles.append('')
@@ -311,39 +321,59 @@ with tab3:
     with col_t3_6: view_mode_t3 = st.selectbox("표시 방식", ["국가별 상세 보기", "전국가 합계 보기"], key="t3_view")
 
     f_raw, f_hist = df_raw.copy(), df[df['연월'] == comp_hist_month].copy()
+    
     f_hist_25 = df[df['연'].astype(str).str[:4] == '2025'].copy()
 
     if sel_cat_t3 != '전체': 
-        f_raw, f_hist, f_hist_25 = f_raw[f_raw['세부구분'] == sel_cat_t3], f_hist[f_hist['세부구분'] == sel_cat_t3], f_hist_25[f_hist_25['세부구분'] == sel_cat_t3]
+        f_raw = f_raw[f_raw['세부구분'] == sel_cat_t3]
+        f_hist = f_hist[f_hist['세부구분'] == sel_cat_t3]
+        f_hist_25 = f_hist_25[f_hist_25['세부구분'] == sel_cat_t3]
+        
     if sel_item_t3 != '전체': 
-        f_raw, f_hist, f_hist_25 = f_raw[f_raw['품목'] == sel_item_t3], f_hist[f_hist['품목'] == sel_item_t3], f_hist_25[f_hist_25['품목'] == sel_item_t3]
+        f_raw = f_raw[f_raw['품목'] == sel_item_t3]
+        f_hist = f_hist[f_hist['품목'] == sel_item_t3]
+        f_hist_25 = f_hist_25[f_hist_25['품목'] == sel_item_t3]
+        
     if sel_country_t3 not in ['전체(개별)', '전국가 합계']: 
-        f_raw, f_hist, f_hist_25 = f_raw[f_raw['국가별'] == sel_country_t3], f_hist[f_hist['국가별'] == sel_country_t3], f_hist_25[f_hist_25['국가별'] == sel_country_t3]
+        f_raw = f_raw[f_raw['국가별'] == sel_country_t3]
+        f_hist = f_hist[f_hist['국가별'] == sel_country_t3]
+        f_hist_25 = f_hist_25[f_hist_25['국가별'] == sel_country_t3]
 
     if '부위' in df_raw.columns:
         parts_to_filter_t3 = []
         if sel_part_t3_1 != '전체': parts_to_filter_t3.append(sel_part_t3_1)
         if sel_part_t3_2 != '선택안함': parts_to_filter_t3.append(sel_part_t3_2)
+
         if parts_to_filter_t3:
             f_raw = f_raw[f_raw['부위'].isin(parts_to_filter_t3)].copy()
             f_hist = f_hist[f_hist['부위'].isin(parts_to_filter_t3)].copy()
             f_hist_25 = f_hist_25[f_hist_25['부위'].isin(parts_to_filter_t3)].copy()
+            
             if len(parts_to_filter_t3) > 1:
                 combined_name = f"{parts_to_filter_t3[0]} + {parts_to_filter_t3[1]}"
-                f_raw['부위'], f_hist['부위'], f_hist_25['부위'] = combined_name, combined_name, combined_name
+                f_raw['부위'] = combined_name
+                f_hist['부위'] = combined_name
+                f_hist_25['부위'] = combined_name
 
     if not f_raw.empty:
-        merge_on = ['세부구분', '품목', '부위'] if '부위' in f_raw.columns else ['세부구분', '품목']
-        if sel_country_t3 != "전국가 합계": merge_on += ['국가별']
+        if sel_country_t3 == "전국가 합계":
+            merge_on = ['세부구분', '품목', '부위'] if '부위' in f_raw.columns else ['세부구분', '품목']
+        else:
+            merge_on = ['세부구분', '품목', '부위', '국가별'] if '부위' in f_raw.columns else ['세부구분', '품목', '국가별']
 
         raw_grp = f_raw.groupby(merge_on)['당월누계(Ton)'].sum().reset_index().rename(columns={'당월누계(Ton)': '실시간 당월 (Ton)'})
         hist_grp = f_hist.groupby(merge_on)['검역량'].sum().reset_index().rename(columns={'검역량': f'과거 {comp_hist_month} (Ton)'})
+        
         avg_monthly = f_hist_25.groupby(merge_on + ['연월'])['검역량'].sum().reset_index()
         avg_grp = avg_monthly.groupby(merge_on)['검역량'].mean().reset_index().rename(columns={'검역량': '25년 월평균'})
         
         merged_df = pd.merge(raw_grp, hist_grp, on=merge_on, how='outer').fillna(0)
         merged_df = pd.merge(merged_df, avg_grp, on=merge_on, how='left').fillna(0)
-        if sel_country_t3 == "전국가 합계": merged_df.insert(len(merge_on), '국가별', '전국가 합계')
+        
+        if sel_country_t3 == "전국가 합계":
+            merged_df['국가별'] = '전국가 합계'
+            cols_order = merge_on + ['국가별', '실시간 당월 (Ton)', f'과거 {comp_hist_month} (Ton)', '25년 월평균']
+            merged_df = merged_df[cols_order]
 
         merged_df['차이 (실시간 - 과거)'] = merged_df['실시간 당월 (Ton)'] - merged_df[f'과거 {comp_hist_month} (Ton)']
         
@@ -356,25 +386,27 @@ with tab3:
             if row['실시간 당월 (Ton)'] == 0: return 0
             projected = row['실시간 당월 (Ton)'] * pacing_multiplier
             past = row[f'과거 {comp_hist_month} (Ton)']
-            if projected > past: return 1 # 빨강 (초과)
-            elif projected < past: return -1 # 파랑 (미달)
+            if projected > past: return 1
+            elif projected < past: return -1
             return 0
+
         merged_df['_pacing_status'] = merged_df.apply(determine_status, axis=1)
 
         st.markdown("---")
         t3_num_cols = ['실시간 당월 (Ton)', f'과거 {comp_hist_month} (Ton)', '25년 월평균', '차이 (실시간 - 과거)']
         sort_c3_1, sort_c3_2 = st.columns(2)
+        
+        # [복구 완] 색상 기반 정렬 기능 되살리기
         with sort_c3_1:
             sort_col_t3 = st.selectbox("⬇️ 표 정렬 기준 열", t3_num_cols + ["색상 정렬"], index=0, key="t3_sort_col")
         with sort_c3_2:
-            # [수정] 정렬 방식에 색상 정렬 조건 추가
             sort_ord_t3 = st.radio("정렬 방식", ["내림차순 (큰 수부터)", "오름차순 (작은 수부터)", "파란색 글자순 (미달 예상)", "빨간색 글자순 (초과 예상)"], horizontal=True, key="t3_sort_ord")
 
-        # --- [로직 핵심] 실시간 검역 표 정렬 로직 ---
+        # 정렬 적용
         if sort_ord_t3 == "파란색 글자순 (미달 예상)":
-            merged_df = merged_df.sort_values('_pacing_status', ascending=True) # -1, 0, 1 순
+            merged_df = merged_df.sort_values('_pacing_status', ascending=True) # -1, 0, 1
         elif sort_ord_t3 == "빨간색 글자순 (초과 예상)":
-            merged_df = merged_df.sort_values('_pacing_status', ascending=False) # 1, 0, -1 순
+            merged_df = merged_df.sort_values('_pacing_status', ascending=False) # 1, 0, -1
         else:
             is_ascending_t3 = True if "오름차순" in sort_ord_t3 else False
             if sort_col_t3 != "색상 정렬":
@@ -383,15 +415,20 @@ with tab3:
         for col in t3_num_cols:
             merged_df[col] = pd.to_numeric(merged_df[col], errors='coerce').fillna(0).round(0).apply(lambda x: f"{x:,.0f}")
 
+        display_df_t3 = merged_df.drop(columns=['_pacing_status'])
+
         def color_t3_styles(df_to_style):
             style_df = pd.DataFrame('', index=df_to_style.index, columns=df_to_style.columns)
             status_series = merged_df['_pacing_status'].values
+            
             for i, status in enumerate(status_series):
-                if status == 1: style_df.iloc[i, :] = 'color: #D32F2F; font-weight: bold;'
-                elif status == -1: style_df.iloc[i, :] = 'color: #1976D2; font-weight: bold;'
+                if status == 1: 
+                    style_df.iloc[i, :] = 'color: #D32F2F; font-weight: bold;'
+                elif status == -1: 
+                    style_df.iloc[i, :] = 'color: #1976D2; font-weight: bold;'
             return style_df
 
-        final_styled_t3 = merged_df.drop(columns=['_pacing_status']).style.apply(color_t3_styles, axis=None)
+        final_styled_t3 = display_df_t3.style.apply(color_t3_styles, axis=None)
         st.dataframe(final_styled_t3, use_container_width=True, hide_index=True) 
     else:
         st.warning("실시간 검역 데이터가 존재하지 않습니다.")
@@ -406,12 +443,20 @@ st.title("💵 오퍼가")
 
 if not df_offer.empty and '보정오퍼가' in df_offer.columns:
     col_o1, col_o2, col_o3, col_o4 = st.columns(4)
-    sorted_off_years = sorted(df_offer['연'].unique(), key=lambda x: int(x) if str(x).isdigit() else str(x)) if '연' in df_offer.columns else []
-    sorted_off_months = sorted(df_offer['월'].unique(), key=lambda x: int(x) if str(x).isdigit() else str(x)) if '월' in df_offer.columns else []
+    
+    # [복구 완] '1월, 10월, 2월' 에러 고침 -> 숫자만 추출해서 깔끔하게 1~12월 순 정렬
+    def sort_numeric_string(x):
+        digits = ''.join(filter(str.isdigit, str(x)))
+        return int(digits) if digits else 0
+
+    sorted_off_years = sorted(df_offer['연'].unique(), key=sort_numeric_string) if '연' in df_offer.columns else []
+    sorted_off_months = sorted(df_offer['월'].unique(), key=sort_numeric_string) if '월' in df_offer.columns else []
+    
     with col_o1: off_year = st.selectbox("연 선택", ['전체'] + sorted_off_years) if '연' in df_offer.columns else '전체'
     with col_o2: off_month = st.selectbox("월 선택", ['전체'] + sorted_off_months) if '월' in df_offer.columns else '전체'
     with col_o3: off_cat = st.selectbox("대분류 선택", ['전체'] + sorted(df_offer['대분류'].unique())) if '대분류' in df_offer.columns else '전체'
     with col_o4: off_item = st.selectbox("품목명 선택", ['전체'] + sorted(df_offer['품목명'].unique())) if '품목명' in df_offer.columns else '전체'
+        
     col_o5, col_o6, col_o7 = st.columns(3)
     with col_o5: off_origin = st.selectbox("원산지 선택", ['전체'] + sorted(df_offer['원산지'].unique())) if '원산지' in df_offer.columns else '전체'
     with col_o6: off_brand = st.selectbox("브랜드 선택", ['전체'] + sorted(df_offer['브랜드'].unique())) if '브랜드' in df_offer.columns else '전체'
@@ -428,8 +473,15 @@ if not df_offer.empty and '보정오퍼가' in df_offer.columns:
 
     target_cols = ['대분류', '연', '월', '원산지', '품목명', '브랜드', 'EST', '등급']
     idx_cols = [c for c in target_cols if c in filtered_offer.columns]
+    
     if idx_cols and not filtered_offer.empty:
-        offer_pivot = pd.pivot_table(filtered_offer, values='보정오퍼가', index=idx_cols, aggfunc='mean').reset_index()
+        offer_pivot = pd.pivot_table(
+            filtered_offer, 
+            values='보정오퍼가', 
+            index=idx_cols, 
+            aggfunc='mean' 
+        ).reset_index()
+
         offer_pivot['보정오퍼가'] = pd.to_numeric(offer_pivot['보정오퍼가'], errors='coerce').fillna(0).round(0).apply(lambda x: f"{x:,.0f}")
         st.dataframe(offer_pivot, use_container_width=True, hide_index=True)
     else:
