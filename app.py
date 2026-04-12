@@ -5,6 +5,7 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 import extra_streamlit_components as stx
 import time
+import re
 
 # ------------------------------------------------------------------
 # 1. 기본 설정 및 스타일
@@ -159,8 +160,18 @@ if not df.empty:
         if r_brand: t_df = t_df[t_df['브랜드'].str.contains(r_brand, na=False, case=False)]
 
         if not t_df.empty:
-            # 품목 선택 드롭다운
-            opts = t_df.apply(lambda x: f"[{x['소비기한']}] {x['품명']} / {x['브랜드']} (재고:{x['재고수량']})", axis=1)
+            # [기능 추가] 날짜 축약 및 창고명 추가 함수
+            def make_compact_label(x):
+                exp = str(x['소비기한']).strip()
+                # 2026.04.25 -> 26.4.25 로 변환
+                if exp.startswith("20") and len(exp) >= 8:
+                    exp = exp[2:]
+                exp = re.sub(r'([.-])0(\d)', r'\1\2', exp) 
+                
+                wh = str(x.get('창고명', '')).strip()
+                return f"[{exp} | {wh}] {x['품명']} / {x['브랜드']} (재고:{x['재고수량']})"
+
+            opts = t_df.apply(make_compact_label, axis=1)
             sel_idx = st.selectbox("출고할 재고 선택 (소비기한순)", opts.index, format_func=lambda i: opts[i])
             row = t_df.loc[sel_idx]
 
@@ -180,7 +191,8 @@ if not df.empty:
                 
                 changes = f2.text_input("변경사항(M열)", placeholder="특이사항 입력")
                 
-                qty = f3.number_input("출고 수량", min_value=0.1, step=1.0, value=1.0)
+                # [기능 수정] 소수점 제거 (min_value=1, step=1 로 정수형 고정)
+                qty = f3.number_input("출고 수량", min_value=1, step=1, value=1)
                 price = f3.number_input("판매 단가", min_value=0, step=100)
                 is_trans = f3.checkbox("이체 여부 (L열)", value=False)
 
