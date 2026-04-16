@@ -1,252 +1,251 @@
 import streamlit as st
 import pandas as pd
+from datetime import datetime, timedelta
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import extra_streamlit_components as stx
 import time
 import re
-import datetime
 
 # ------------------------------------------------------------------
-# 1. 기본 설정 및 보안 (로그인)
+# 1. 기본 설정 및 스타일
 # ------------------------------------------------------------------
-st.set_page_config(page_title="에이젯 발주 관리 시스템", page_icon="🥩", layout="wide")
+st.set_page_config(page_title="에이젯 재고관리", page_icon="🥩", layout="wide")
 
-# 8시간 유지되는 서버 메모리
-@st.cache_resource
-def get_app_state():
-    return {
-        "logged_in": False,
-        "login_expire_time": 0,
-        "confirmed_indices": set() # 확정 내역(고유 ID) 보관
-    }
+st.markdown("""
+    <style>
+        div[data-baseweb="select"] > div { white-space: normal !important; height: auto !important; min-height: 60px; }
+        ul[role="listbox"] li span { white-space: normal !important; word-break: break-all !important; display: block !important; line-height: 1.6 !important; }
+    </style>
+""", unsafe_allow_html=True)
 
-app_state = get_app_state()
-
-def check_login():
-    current_time = time.time()
-    
-    if app_state["logged_in"] and current_time > app_state["login_expire_time"]:
-        app_state["logged_in"] = False
-        app_state["confirmed_indices"].clear()
-
-    if not app_state["logged_in"]:
-        st.title("🔒 에이젯 시스템 접속")
-        with st.form("login_form"):
-            user_id = st.text_input("아이디 (ID)")
-            user_pw = st.text_input("비밀번호 (PW)", type="password")
-            submitted = st.form_submit_button("로그인", type="primary", use_container_width=True)
-            if submitted:
-                if user_id == "AZ" and user_pw == "5835":
-                    app_state["logged_in"] = True
-                    app_state["login_expire_time"] = current_time + (8 * 3600)
-                    st.success("인증되었습니다. 데이터를 불러옵니다...")
-                    time.sleep(1)
-                    st.rerun()
-                else:
-                    st.error("계정 정보가 일치하지 않습니다.")
-        return False
-    return True
-
-if not check_login():
-    st.stop()
+# 상수 설정
+USERS = {"AZ": "5835", "AZS": "0983"}
+MANAGERS = ["박정운", "강경현", "송광훈", "정기태", "김미남", "신상명", "백윤주"]
+COOKIE_NAME = "az_inventory_auth"
 
 # ------------------------------------------------------------------
-# 2. 구글 시트 연결 및 데이터 로드
+# 2. 구글 서비스 연결 함수
 # ------------------------------------------------------------------
 def get_gspread_client():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
+    # st.secrets["gcp_service_account"]에 JSON 키가 저장되어 있어야 합니다.
     creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
     return gspread.authorize(creds)
 
+# ------------------------------------------------------------------
+# 3. 로그인 및 쿠키 시스템
+# ------------------------------------------------------------------
+cookie_manager = stx.CookieManager()
+
+if 'logged_in' not in st.session_state:
+    st.session_state['logged_in'] = False
+
+# 쿠키 읽기 및 로그인 유지
+cookie_val = cookie_manager.get(COOKIE_NAME)
+if cookie_val and not st.session_state['logged_in']:
+    st.session_state['logged_in'] = True
+    st.session_state['user_id'] = cookie_val
+
+def logout():
+    cookie_manager.delete(COOKIE_NAME)
+    st.session_state['logged_in'] = False
+    st.session_state['user_id'] = None
+    st.rerun()
+
+# 로그인 화면
+if not st.session_state['logged_in']:
+    st.title("🔒 에이젯 재고관리 로그인")
+    with st.form("login_form"):
+        i_id = st.text_input("아이디").strip().upper()
+        i_pw = st.text_input("비밀번호", type="password").strip()
+        submit = st.form_submit_button("로그인", type="primary", use_container_width=True)
+
+        if submit:
+            if i_id in USERS and USERS[i_id] == i_pw:
+                expire_date = datetime.now() + timedelta(hours=8)
+                cookie_manager.set(COOKIE_NAME, i_id, expires_at=expire_date)
+                st.session_state['logged_in'] = True
+                st.session_state['user_id'] = i_id
+                st.success("✅ 로그인 성공! 잠시만 기다려주세요...")
+                time.sleep(1)
+                st.rerun()
+            else:
+                st.error("❌ 아이디 또는 비밀번호가 틀렸습니다.")
+    st.stop()
+
+# ------------------------------------------------------------------
+# 4. 데이터 로딩 (캐시 적용)
+# ------------------------------------------------------------------
 @st.cache_data(ttl=60)
-def load_order_data():
+def load_data():
     try:
         gc = get_gspread_client()
-        sheet_key = '1bhfGQDzqA_W54CnWyVEXr07Ms74Yy3d1PctlVbZSVzk'
-        doc = gc.open_by_key(sheet_key)
-        all_sheets = doc.worksheets()
-        target_worksheet = next((s for s in all_sheets if '4월' in s.title and '발주' in s.title), doc.get_worksheet(0))
-        
-        data = target_worksheet.get_all_values()
-        if not data or len(data) < 1: return pd.DataFrame()
-            
-        df = pd.DataFrame(data[1:], columns=data[0])
-        df.columns = df.columns.str.strip()
-        df = df.loc[:, df.columns != '']
-        
-        item_col = "품명 브랜드 등급 EST"
-        if item_col in df.columns:
-            df[item_col] = df[item_col].astype(str).str.strip()
-            df = df[~df[item_col].str.startswith(('냉', '.냉'))]
-            df = df[df[item_col] != ""]
-            
-        qty_col = "수량(BOX)"
-        if qty_col in df.columns:
-            df[qty_col] = pd.to_numeric(df[qty_col].astype(str).str.replace(',', ''), errors='coerce').fillna(0).astype(int)
-            df = df[df[qty_col] > 0]
-            
-        # 고유 식별자(UID) 생성 로직
-        uid_cols = [c for c in df.columns if c in ['날짜', '시간', '거래처명', '담당자', '품명 브랜드 등급 EST', '수량(BOX)']]
-        df['UID'] = df[uid_cols].astype(str).agg('_'.join, axis=1)
-        df['UID'] = df['UID'] + "_" + df.groupby('UID').cumcount().astype(str)
-        df.set_index('UID', inplace=True)
-            
+        sh = gc.open('에이젯광주 운영독스').worksheet('raw_운영부재고')
+        data = sh.get_all_records()
+        df = pd.DataFrame(data)
+
+        # 컬럼명 통일
+        df.rename(columns={
+            'B/L NO': 'BL넘버', 
+            '식별번호': 'BL넘버', 
+            'B/L NO,식별번호': 'BL넘버', 
+            '브랜드-등급-est': '브랜드'
+        }, inplace=True)
+
+        # 데이터 정리 (공백 제거 및 문자열 변환)
+        df = df.map(lambda x: str(x).strip() if x else "")
+
+        # 정렬용 보조 컬럼 생성
+        df['_is_bonjum'] = df['창고명'].apply(lambda x: 1 if "본점" in str(x) else 0)
+        df['_date_sort'] = pd.to_datetime(df['소비기한'], errors='coerce').fillna(pd.Timestamp('2099-12-31'))
+
         return df
     except Exception as e:
         st.error(f"🚨 데이터 로드 실패: {e}")
         return pd.DataFrame()
 
 # ------------------------------------------------------------------
-# 3. 메인 로직 및 탭 구성
+# 5. 메인 화면 - 재고 현황
 # ------------------------------------------------------------------
-st.title("🥩 AZ 발주확인(운영부)")
+with st.sidebar:
+    st.write(f"👤 **{st.session_state['user_id']}**님 접속 중")
+    if st.button("로그아웃"):
+        logout()
 
-st.sidebar.success(f"현재 접속: AZ 관리자")
-remaining_seconds = int(app_state["login_expire_time"] - time.time())
-hours, remainder = divmod(remaining_seconds, 3600)
-minutes, _ = divmod(remainder, 60)
-st.sidebar.info(f"⏳ 자동 로그아웃까지:\n\n**{hours}시간 {minutes}분 남음**")
+st.title("🥩 에이젯광주 실시간 재고")
+df = load_data()
 
-if st.sidebar.button("수동 로그아웃"):
-    app_state["logged_in"] = False
-    st.rerun()
+if not df.empty:
+    # 검색 필터
+    c1, c2 = st.columns(2)
+    s_item = c1.text_input("🔍 품명 검색")
+    s_brand = c2.text_input("🏢 브랜드 검색")
 
-raw_df = load_order_data()
+    f_df = df.copy()
+    if s_item: f_df = f_df[f_df['품명'].str.contains(s_item, na=False, case=False)]
+    if s_brand: f_df = f_df[f_df['브랜드'].str.contains(s_brand, na=False, case=False)]
 
-if not raw_df.empty:
-    date_col = next((c for c in raw_df.columns if '날짜' in c or '일자' in c or '일' in c), "날짜")
-    item_col = "품명 브랜드 등급 EST"
-    qty_col = "수량(BOX)"
-    manager_col = "담당자"
-    client_col = "거래처명"
-    time_col = "시간"
-    note_col = next((c for c in raw_df.columns if '비고' in c), "비고(이력,수기,취소)")
-    add_col = next((c for c in raw_df.columns if '추가' in c), "추가")
+    current_user = st.session_state['user_id']
 
-    tab1, tab2, tab3 = st.tabs(["📦 출고 예정", "✅ 출고 확정", "📊 품목/담당자별 수량 현황"])
+    # 정렬: 본점은 아래로, 나머지는 소비기한 임박순
+    f_df = f_df.sort_values(by=['_is_bonjum', '_date_sort'])
 
-    # 💡 테블릿에서 짤리지 않게 최적화된 너비 설정
-    base_col_config = {
-        "👉 확정": st.column_config.CheckboxColumn("출고완료", width="small"),
-        "👉 취소": st.column_config.CheckboxColumn("확정취소", width="small"),
-        date_col: st.column_config.TextColumn("일자", width="small"),
-        client_col: st.column_config.TextColumn("거래처명", width="medium"),
-        manager_col: st.column_config.TextColumn("담당자", width="small"),
-        item_col: st.column_config.TextColumn("품명", width="medium"),
-        qty_col: st.column_config.NumberColumn("수량", width="small"),
-        note_col: st.column_config.TextColumn("비고", width="medium"),
-        add_col: st.column_config.TextColumn("추가", width="small"),
-        time_col: st.column_config.TextColumn("시간", width="small")
-    }
+    # 권한별 노출 설정
+    if current_user == "AZS":
+        # AZS는 본점 재고 제외하고 BL넘버 포함
+        f_df = f_df[f_df['_is_bonjum'] == 0]
+        cols = ['품명', '브랜드', '재고수량', 'BL넘버', '창고명', '소비기한']
+    else:
+        # 일반 AZ는 모든 재고 조회 (BL넘버 제외)
+        cols = ['품명', '브랜드', '재고수량', '창고명', '소비기한']
 
-    def sort_dates(date_list):
-        def parse_date(d):
-            nums = re.findall(r'\d+', str(d))
-            return tuple(map(int, nums)) if nums else (0, 0)
-        return sorted(date_list, key=parse_date, reverse=True)
+    valid_cols = [c for c in cols if c in f_df.columns]
+    st.dataframe(f_df[valid_cols], use_container_width=True, hide_index=True)
 
-    today = datetime.datetime.now()
-    today_m_d = f"{today.month}. {today.day}"
-    today_d = str(today.day)
+    # ------------------------------------------------------------------
+    # 6. 출고 등록 (AZS 전용 기능)
+    # ------------------------------------------------------------------
+    if current_user == "AZS":
+        st.divider()
+        st.header("🚚 출고 등록 (본점 제외)")
 
-    # 탭 1: 출고 예정
-    with tab1:
-        if date_col in raw_df.columns:
-            u_dates = [d for d in raw_df[date_col].unique() if str(d).strip() != '']
-            sorted_dates = sort_dates(u_dates)
-            
-            default_index = 0
-            for i, d in enumerate(sorted_dates):
-                if today_m_d in str(d) or str(d).strip() == today_d:
-                    default_index = i + 1
-                    break
-            
-            selected_date_t1 = st.selectbox("📅 날짜 선택", ["전체 보기"] + sorted_dates, index=default_index, key="t1_date")
-            pending_df = raw_df.copy()
-            if selected_date_t1 != "전체 보기":
-                pending_df = pending_df[pending_df[date_col] == selected_date_t1]
+        sc1, sc2 = st.columns(2)
+        r_item = sc1.text_input("🔍 출고 품목 필터", key="out_item")
+        r_brand = sc2.text_input("🏢 출고 브랜드 필터", key="out_brand")
+
+        # 본점을 제외한 가용 재고 목록
+        t_df = f_df[f_df['_is_bonjum'] == 0].copy().reset_index(drop=True)
+        if r_item: t_df = t_df[t_df['품명'].str.contains(r_item, na=False, case=False)]
+        if r_brand: t_df = t_df[t_df['브랜드'].str.contains(r_brand, na=False, case=False)]
+
+        if not t_df.empty:
+            # 품목 선택 드롭다운
+            opts = t_df.apply(lambda x: f"[{x['소비기한']}] {x['품명']} / {x['브랜드']} (재고:{x['재고수량']})", axis=1)
+            # [기능 추가] 날짜 축약 및 창고명 추가 함수
+            def make_compact_label(x):
+                exp = str(x['소비기한']).strip()
+                # 2026.04.25 -> 26.4.25 로 변환
+                if exp.startswith("20") and len(exp) >= 8:
+                    exp = exp[2:]
+                exp = re.sub(r'([.-])0(\d)', r'\1\2', exp) 
+                
+                wh = str(x.get('창고명', '')).strip()
+                return f"[{exp} | {wh}] {x['품명']} / {x['브랜드']} (재고:{x['재고수량']})"
+
+            opts = t_df.apply(make_compact_label, axis=1)
+            sel_idx = st.selectbox("출고할 재고 선택 (소비기한순)", opts.index, format_func=lambda i: opts[i])
+            row = t_df.loc[sel_idx]
+
+            # 가용 재고 숫자 변환
+            try:
+                available_stock = float(str(row['재고수량']).replace(',', ''))
+            except:
+                available_stock = 0.0
+
+            with st.form("out_form", clear_on_submit=True):
+                f1, f2, f3 = st.columns(3)
+
+                # 정보 입력
+                out_date = f1.date_input("출고일", datetime.now())
+                manager = f1.selectbox("담당자", MANAGERS)
+                client_name = f1.text_input("거래처")
+
+                changes = f2.text_input("변경사항(M열)", placeholder="특이사항 입력")
+
+                qty = f3.number_input("출고 수량", min_value=0.1, step=1.0, value=1.0)
+                # [기능 수정] 소수점 제거 (min_value=1, step=1 로 정수형 고정)
+                qty = f3.number_input("출고 수량", min_value=1, step=1, value=1)
+                price = f3.number_input("판매 단가", min_value=0, step=100)
+                is_trans = f3.checkbox("이체 여부 (L열)", value=False)
+
+                if st.form_submit_button("출고 확정 및 등록", type="primary"):
+                    if qty > available_stock:
+                        st.error(f"❌ 재고 부족! (현재 가용: {available_stock})")
+                    elif not client_name:
+                        st.error("❌ 거래처를 입력해주세요.")
+                    else:
+                        try:
+                            # 출고증 시트 연결
+                            gc = get_gspread_client()
+                            out_sh = gc.open_by_key('1xdRllSZ0QTS_h8-HNbs0RqFja9PKnklYon7xrKDHTbo').worksheet('출고증')
+
+                            # 날짜 형식 맞춤 (예: 4. 9)
+                            target_date = f"{out_date.month}. {out_date.day}"
+                            all_vals = out_sh.get_all_values()
+
+                            target_row = -1
+                            # C열 날짜 매칭 & D열 빈 행 찾기
+                            for i, r in enumerate(all_vals, 1):
+                                if len(r) > 2 and str(r[2]).strip() == target_date:
+                                    if len(r) <= 3 or str(r[3]).strip() == "":
+                                        target_row = i
+                                        break
+
+                            if target_row != -1:
+                                # D열 ~ M열 데이터 준비
+                                out_data = [
+                                    str(manager),             # D
+                                    str(client_name),         # E
+                                    str(row['품명']),          # F
+                                    str(row['브랜드']),         # G
+                                    str(row.get('BL넘버','-')), # H
+                                    int(qty),                 # I
+                                    str(row.get('창고명','')),  # J
+                                    int(price),               # K
+                                    "이체" if is_trans else "", # L
+                                    str(changes)              # M
+                                ]
+                                out_sh.update(range_name=f"D{target_row}:M{target_row}", values=[out_data], value_input_option='USER_ENTERED')
+                                st.success(f"✅ {target_date} 출고 등록 완료! ({target_row}행)")
+                                time.sleep(1)
+                                st.cache_data.clear()
+                                st.rerun()
+                            else:
+                                st.error(f"❌ '{target_date}' 날짜에 입력 가능한 빈 행이 없습니다.")
+                        except Exception as e:
+                            st.error(f"🚨 등록 중 오류 발생: {e}")
         else:
-            pending_df = raw_df.copy()
-
-        pending_df = pending_df[~pending_df.index.isin(app_state['confirmed_indices'])]
-        
-        if item_col in pending_df.columns:
-            pending_df = pending_df.sort_values(by=[item_col])
-        
-        if not pending_df.empty:
-            pending_df["👉 확정"] = False 
-            
-            # 💡 [핵심] 열 순서 변경: 출고완료가 날짜 바로 옆(왼쪽)으로 오도록 배치
-            ordered_cols = ["👉 확정", date_col, client_col, manager_col, item_col, qty_col, note_col, add_col, time_col]
-            display_pending = pending_df[[c for c in ordered_cols if c in pending_df.columns or c == "👉 확정"]]
-
-            # 💡 use_container_width=True 로 테블릿 화면에 꽉 맞춤
-            edited_df_t1 = st.data_editor(
-                display_pending,
-                column_config=base_col_config,
-                disabled=[c for c in display_pending.columns if c != "👉 확정"],
-                hide_index=True,
-                use_container_width=True,
-                height=int((len(display_pending) + 1) * 35) + 40,
-                key="editor_pending"
-            )
-
-            confirmed_now = edited_df_t1[edited_df_t1["👉 확정"] == True].index
-            if len(confirmed_now) > 0:
-                app_state['confirmed_indices'].update(confirmed_now)
-                st.toast(f"{len(confirmed_now)}건 확정 완료!")
-                time.sleep(0.5)
-                st.rerun()
-        else:
-            st.info("예정된 출고 건이 없습니다.")
-
-    # 탭 2: 출고 확정
-    with tab2:
-        confirmed_df = raw_df[raw_df.index.isin(app_state['confirmed_indices'])].copy()
-        if not confirmed_df.empty:
-            confirmed_df["👉 취소"] = False
-            
-            # 💡 열 순서 변경 (출고완료 대신 확정취소 버튼 배치)
-            ordered_cols_t2 = ["👉 취소", date_col, client_col, manager_col, item_col, qty_col, note_col, add_col, time_col]
-            display_confirmed = confirmed_df[[c for c in ordered_cols_t2 if c in confirmed_df.columns or c == "👉 취소"]]
-
-            edited_df_t2 = st.data_editor(
-                display_confirmed,
-                column_config=base_col_config,
-                disabled=[c for c in display_confirmed.columns if c != "👉 취소"],
-                hide_index=True,
-                use_container_width=True,
-                height=int((len(display_confirmed) + 1) * 35) + 40,
-                key="editor_confirmed"
-            )
-            
-            canceled_now = edited_df_t2[edited_df_t2["👉 취소"] == True].index
-            if len(canceled_now) > 0:
-                app_state['confirmed_indices'].difference_update(canceled_now)
-                st.toast(f"{len(canceled_now)}건 확정 취소!")
-                time.sleep(0.5)
-                st.rerun()
-        else:
-            st.write("확정 내역이 없습니다.")
-
-    # 탭 3: 집계 현황
-    with tab3:
-        all_pending = raw_df[~raw_df.index.isin(app_state['confirmed_indices'])]
-        if not all_pending.empty:
-            pivot_table = pd.pivot_table(
-                all_pending, values=qty_col, index=item_col, columns=manager_col, aggfunc='sum', fill_value=0
-            )
-            pivot_table['총 합계'] = pivot_table.sum(axis=1)
-            pivot_display = pivot_table.sort_values('총 합계', ascending=False).reset_index()
-            
-            st.dataframe(
-                pivot_display, 
-                use_container_width=True, 
-                hide_index=True,
-                height=int((len(pivot_display) + 1) * 35) + 40
-            )
-        else:
-            st.write("집계할 데이터가 없습니다.")
-
+            st.warning("필터에 맞는 재고가 없습니다.")
 else:
-    st.info("발주 내역을 로딩 중입니다.")
+    st.info("데이터를 불러오는 중입니다...")
