@@ -8,14 +8,32 @@ import time
 import re
 
 # ------------------------------------------------------------------
-# 1. 기본 설정 및 스타일
+# 1. 기본 설정 및 스타일 (드롭다운 줄바꿈 CSS 호환성 강화)
 # ------------------------------------------------------------------
 st.set_page_config(page_title="에이젯 재고관리", page_icon="🥩", layout="wide")
 
 st.markdown("""
     <style>
-        div[data-baseweb="select"] > div { white-space: normal !important; height: auto !important; min-height: 60px; }
-        ul[role="listbox"] li span { white-space: normal !important; word-break: break-all !important; display: block !important; line-height: 1.6 !important; }
+        /* 드롭다운 클릭 전(선택된 상태) 박스 스타일 */
+        div[data-baseweb="select"] > div { 
+            height: auto !important;
+            min-height: 120px !important; 
+        }
+        /* 드롭다운 내부에 표시되는 텍스트 전체에 줄바꿈 강제 적용 */
+        div[data-baseweb="select"] * {
+            white-space: pre-wrap !important;
+            line-height: 1.5 !important;
+        }
+        /* 드롭다운을 클릭했을 때 펼쳐지는 리스트 아이템 스타일 */
+        ul[role="listbox"] li {
+            padding: 15px 10px !important;
+            border-bottom: 1px solid #e0e0e0;
+            height: auto !important;
+        }
+        ul[role="listbox"] li * { 
+            white-space: pre-wrap !important; 
+            line-height: 1.5 !important; 
+        }
     </style>
 """, unsafe_allow_html=True)
 
@@ -33,13 +51,14 @@ def get_gspread_client():
     return gspread.authorize(creds)
 
 # ------------------------------------------------------------------
-# 3. 로그인 및 쿠키 시스템
+# 3. 로그인 및 쿠키 시스템 (12시간 유지 명확화)
 # ------------------------------------------------------------------
 cookie_manager = stx.CookieManager()
 
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 
+# 쿠키 읽어오기
 cookie_val = cookie_manager.get(COOKIE_NAME)
 if cookie_val and not st.session_state['logged_in']:
     st.session_state['logged_in'] = True
@@ -60,12 +79,14 @@ if not st.session_state['logged_in']:
 
         if submit:
             if i_id in USERS and USERS[i_id] == i_pw:
-                expire_date = datetime.now() + timedelta(hours=8)
+                # 💡 현재 시간 기준 정확히 12시간 뒤로 만료 시간 설정
+                expire_date = datetime.now() + timedelta(hours=12)
                 cookie_manager.set(COOKIE_NAME, i_id, expires_at=expire_date)
+                
                 st.session_state['logged_in'] = True
                 st.session_state['user_id'] = i_id
                 st.success("✅ 로그인 성공! 잠시만 기다려주세요...")
-                time.sleep(1)
+                time.sleep(1.5) # 쿠키가 브라우저에 구워질 수 있도록 대기 시간 약간 늘림
                 st.rerun()
             else:
                 st.error("❌ 아이디 또는 비밀번호가 틀렸습니다.")
@@ -146,16 +167,30 @@ if not df.empty:
         if r_brand: t_df = t_df[t_df['브랜드'].str.contains(r_brand, na=False, case=False)]
 
         if not t_df.empty:
+            # 💡 [수정] 드롭다운에 표시될 텍스트 묶음 (줄바꿈 포함)
             def make_compact_label(x):
                 exp = str(x['소비기한']).strip()
                 if exp.startswith("20") and len(exp) >= 8:
                     exp = exp[2:]
                 exp = re.sub(r'([.-])0(\d)', r'\1\2', exp) 
+                
                 wh = str(x.get('창고명', '')).strip()
-                return f"[{exp} | {wh}] {x['품명']} / {x['브랜드']} (재고:{x['재고수량']})"
+                item_name = str(x.get('품명', '')).strip()
+                brand_name = str(x.get('브랜드', '')).strip()
+                stock = str(x.get('재고수량', '')).strip()
+                
+                # \n을 활용하여 세로로 5줄로 출력되도록 구성
+                return f"[{exp}]\n{wh}\n{item_name}\n{brand_name}\n(재고: {stock}개)"
 
             opts = t_df.apply(make_compact_label, axis=1)
-            sel_idx = st.selectbox("출고할 재고 선택 (소비기한순)", opts.index, format_func=lambda i: opts[i])
+            
+            # 드롭다운 선택
+            sel_idx = st.selectbox(
+                "출고할 재고 선택 (소비기한순)", 
+                opts.index, 
+                format_func=lambda i: opts[i],
+                help="필터를 활용하면 원하는 품목을 더 쉽게 찾을 수 있습니다."
+            )
             row = t_df.loc[sel_idx]
 
             try:
@@ -172,7 +207,6 @@ if not df.empty:
                 
                 changes = f2.text_input("변경사항(M열)", placeholder="특이사항 입력")
                 
-                # 💡 [수정] 중복 제거 및 정수형(int) 입력 고정
                 qty = f3.number_input("출고 수량", min_value=1, step=1, value=1)
                 price = f3.number_input("판매 단가", min_value=0, step=100)
                 is_trans = f3.checkbox("이체 여부 (L열)", value=False)
@@ -199,16 +233,16 @@ if not df.empty:
                             
                             if target_row != -1:
                                 out_data = [
-                                    str(manager),             # D
-                                    str(client_name),         # E
-                                    str(row['품명']),          # F
-                                    str(row['브랜드']),         # G
-                                    str(row.get('BL넘버','-')), # H
-                                    int(qty),                  # I
-                                    str(row.get('창고명','')),  # J
-                                    int(price),                # K
-                                    "이체" if is_trans else "", # L
-                                    str(changes)               # M
+                                    str(manager),               # D
+                                    str(client_name),           # E
+                                    str(row['품명']),            # F
+                                    str(row['브랜드']),           # G
+                                    str(row.get('BL넘버','-')),  # H
+                                    int(qty),                   # I
+                                    str(row.get('창고명','')),    # J
+                                    int(price),                 # K
+                                    "이체" if is_trans else "",  # L
+                                    str(changes)                # M
                                 ]
                                 out_sh.update(range_name=f"D{target_row}:M{target_row}", values=[out_data], value_input_option='USER_ENTERED')
                                 st.success(f"✅ {target_date} 출고 등록 완료! ({target_row}행)")
