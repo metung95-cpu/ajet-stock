@@ -133,13 +133,19 @@ if not df.empty:
 
     valid_cols = [c for c in cols if c in f_df.columns]
     
-    df_event = st.dataframe(
-        f_df[valid_cols], 
-        use_container_width=True, 
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single_row"
-    )
+    # 예외 처리를 추가하여 Streamlit 버전에 따른 오류 방지
+    try:
+        df_event = st.dataframe(
+            f_df[valid_cols], 
+            use_container_width=True, 
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single_row"
+        )
+    except TypeError:
+        # 구버전 Streamlit 사용자일 경우 일반 데이터프레임 노출
+        st.warning("⚠️ Streamlit 버전이 낮아 표 클릭 기능이 비활성화되었습니다. (터미널에서 `pip install --upgrade streamlit` 입력 필요)")
+        df_event = st.dataframe(f_df[valid_cols], use_container_width=True, hide_index=True)
 
     if current_user == "AZS":
         st.divider()
@@ -172,7 +178,12 @@ if not df.empty:
             if "prev_table_sel" not in st.session_state:
                 st.session_state.prev_table_sel = []
                 
-            curr_table_sel = df_event.selection.rows if hasattr(df_event, "selection") else []
+            # 💡 [수정됨] 딕셔너리와 객체 형태를 모두 안전하게 처리
+            curr_table_sel = []
+            if isinstance(df_event, dict) and "selection" in df_event:
+                curr_table_sel = df_event["selection"]["rows"]
+            elif hasattr(df_event, "selection") and hasattr(df_event.selection, "rows"):
+                curr_table_sel = df_event.selection.rows
             
             if curr_table_sel != st.session_state.prev_table_sel:
                 st.session_state.prev_table_sel = curr_table_sel
