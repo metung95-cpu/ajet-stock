@@ -132,20 +132,7 @@ if not df.empty:
         cols = ['품명', '브랜드', '재고수량', '창고명', '소비기한']
 
     valid_cols = [c for c in cols if c in f_df.columns]
-    
-    # 예외 처리를 추가하여 Streamlit 버전에 따른 오류 방지
-    try:
-        df_event = st.dataframe(
-            f_df[valid_cols], 
-            use_container_width=True, 
-            hide_index=True,
-            on_select="rerun",
-            selection_mode="single_row"
-        )
-    except TypeError:
-        # 구버전 Streamlit 사용자일 경우 일반 데이터프레임 노출
-        st.warning("⚠️ Streamlit 버전이 낮아 표 클릭 기능이 비활성화되었습니다. (터미널에서 `pip install --upgrade streamlit` 입력 필요)")
-        df_event = st.dataframe(f_df[valid_cols], use_container_width=True, hide_index=True)
+    st.dataframe(f_df[valid_cols], use_container_width=True, hide_index=True)
 
     if current_user == "AZS":
         st.divider()
@@ -155,7 +142,7 @@ if not df.empty:
         r_item = sc1.text_input("🔍 출고 품목 필터", key="out_item")
         r_brand = sc2.text_input("🏢 출고 브랜드 필터", key="out_brand")
 
-        t_df = f_df[f_df['_is_bonjum'] == 0].copy()
+        t_df = f_df[f_df['_is_bonjum'] == 0].copy().reset_index(drop=True)
         if r_item: t_df = t_df[t_df['품명'].str.contains(r_item, na=False, case=False)]
         if r_brand: t_df = t_df[t_df['브랜드'].str.contains(r_brand, na=False, case=False)]
 
@@ -174,32 +161,11 @@ if not df.empty:
                 return f"[{exp}]\n{wh}\n{item_name}\n{brand_name}\n(재고: {stock}개)"
 
             opts = t_df.apply(make_compact_label, axis=1)
-
-            if "prev_table_sel" not in st.session_state:
-                st.session_state.prev_table_sel = []
-                
-            # 💡 [수정됨] 딕셔너리와 객체 형태를 모두 안전하게 처리
-            curr_table_sel = []
-            if isinstance(df_event, dict) and "selection" in df_event:
-                curr_table_sel = df_event["selection"]["rows"]
-            elif hasattr(df_event, "selection") and hasattr(df_event.selection, "rows"):
-                curr_table_sel = df_event.selection.rows
             
-            if curr_table_sel != st.session_state.prev_table_sel:
-                st.session_state.prev_table_sel = curr_table_sel
-                if len(curr_table_sel) > 0:
-                    clicked_idx = f_df.index[curr_table_sel[0]]
-                    if clicked_idx in opts.index:
-                        st.session_state['out_dropdown'] = clicked_idx
-
-            if 'out_dropdown' in st.session_state and st.session_state['out_dropdown'] not in opts.index:
-                del st.session_state['out_dropdown']
-
             sel_idx = st.selectbox(
                 "출고할 재고 선택 (소비기한순)", 
                 opts.index, 
-                format_func=lambda i: opts[i],
-                key="out_dropdown"
+                format_func=lambda i: opts[i]
             )
             row = t_df.loc[sel_idx]
 
