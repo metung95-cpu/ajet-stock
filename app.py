@@ -7,24 +7,18 @@ import extra_streamlit_components as stx
 import time
 import re
 
-# ------------------------------------------------------------------
-# 1. 기본 설정 및 스타일 (드롭다운 줄바꿈 CSS 호환성 강화)
-# ------------------------------------------------------------------
 st.set_page_config(page_title="에이젯 재고관리", page_icon="🥩", layout="wide")
 
 st.markdown("""
     <style>
-        /* 드롭다운 클릭 전(선택된 상태) 박스 스타일 */
         div[data-baseweb="select"] > div { 
             height: auto !important;
             min-height: 120px !important; 
         }
-        /* 드롭다운 내부에 표시되는 텍스트 전체에 줄바꿈 강제 적용 */
         div[data-baseweb="select"] * {
             white-space: pre-wrap !important;
             line-height: 1.5 !important;
         }
-        /* 드롭다운을 클릭했을 때 펼쳐지는 리스트 아이템 스타일 */
         ul[role="listbox"] li {
             padding: 15px 10px !important;
             border-bottom: 1px solid #e0e0e0;
@@ -37,28 +31,20 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 상수 설정
 USERS = {"AZ": "5835", "AZS": "0983"}
 MANAGERS = ["박정운", "강경현", "송광훈", "정기태", "김미남", "신상명", "백윤주"]
 COOKIE_NAME = "az_inventory_auth"
 
-# ------------------------------------------------------------------
-# 2. 구글 서비스 연결 함수
-# ------------------------------------------------------------------
 def get_gspread_client():
     scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
     creds = ServiceAccountCredentials.from_json_keyfile_dict(st.secrets["gcp_service_account"], scope)
     return gspread.authorize(creds)
 
-# ------------------------------------------------------------------
-# 3. 로그인 및 쿠키 시스템 (12시간 유지 명확화)
-# ------------------------------------------------------------------
 cookie_manager = stx.CookieManager()
 
 if 'logged_in' not in st.session_state:
     st.session_state['logged_in'] = False
 
-# 쿠키 읽어오기
 cookie_val = cookie_manager.get(COOKIE_NAME)
 if cookie_val and not st.session_state['logged_in']:
     st.session_state['logged_in'] = True
@@ -79,22 +65,18 @@ if not st.session_state['logged_in']:
 
         if submit:
             if i_id in USERS and USERS[i_id] == i_pw:
-                # 💡 현재 시간 기준 정확히 12시간 뒤로 만료 시간 설정
                 expire_date = datetime.now() + timedelta(hours=12)
                 cookie_manager.set(COOKIE_NAME, i_id, expires_at=expire_date)
                 
                 st.session_state['logged_in'] = True
                 st.session_state['user_id'] = i_id
                 st.success("✅ 로그인 성공! 잠시만 기다려주세요...")
-                time.sleep(1.5) # 쿠키가 브라우저에 구워질 수 있도록 대기 시간 약간 늘림
+                time.sleep(1.5)
                 st.rerun()
             else:
                 st.error("❌ 아이디 또는 비밀번호가 틀렸습니다.")
     st.stop()
 
-# ------------------------------------------------------------------
-# 4. 데이터 로딩 (캐시 적용)
-# ------------------------------------------------------------------
 @st.cache_data(ttl=60)
 def load_data():
     try:
@@ -111,6 +93,10 @@ def load_data():
         }, inplace=True)
         
         df = df.map(lambda x: str(x).strip() if x else "")
+        
+        df['재고수량_임시숫자'] = pd.to_numeric(df['재고수량'].str.replace(',', ''), errors='coerce')
+        df = df[df['재고수량_임시숫자'].notna()].copy()
+        
         df['_is_bonjum'] = df['창고명'].apply(lambda x: 1 if "본점" in str(x) else 0)
         df['_date_sort'] = pd.to_datetime(df['소비기한'], errors='coerce').fillna(pd.Timestamp('2099-12-31'))
         
@@ -119,9 +105,6 @@ def load_data():
         st.error(f"🚨 데이터 로드 실패: {e}")
         return pd.DataFrame()
 
-# ------------------------------------------------------------------
-# 5. 메인 화면 - 재고 현황
-# ------------------------------------------------------------------
 with st.sidebar:
     st.write(f"👤 **{st.session_state['user_id']}**님 접속 중")
     if st.button("로그아웃"):
@@ -151,9 +134,6 @@ if not df.empty:
     valid_cols = [c for c in cols if c in f_df.columns]
     st.dataframe(f_df[valid_cols], use_container_width=True, hide_index=True)
 
-    # ------------------------------------------------------------------
-    # 6. 출고 등록 (AZS 전용 기능)
-    # ------------------------------------------------------------------
     if current_user == "AZS":
         st.divider()
         st.header("🚚 출고 등록 (본점 제외)")
@@ -167,7 +147,6 @@ if not df.empty:
         if r_brand: t_df = t_df[t_df['브랜드'].str.contains(r_brand, na=False, case=False)]
 
         if not t_df.empty:
-            # 💡 [수정] 드롭다운에 표시될 텍스트 묶음 (줄바꿈 포함)
             def make_compact_label(x):
                 exp = str(x['소비기한']).strip()
                 if exp.startswith("20") and len(exp) >= 8:
@@ -179,17 +158,14 @@ if not df.empty:
                 brand_name = str(x.get('브랜드', '')).strip()
                 stock = str(x.get('재고수량', '')).strip()
                 
-                # \n을 활용하여 세로로 5줄로 출력되도록 구성
                 return f"[{exp}]\n{wh}\n{item_name}\n{brand_name}\n(재고: {stock}개)"
 
             opts = t_df.apply(make_compact_label, axis=1)
             
-            # 드롭다운 선택
             sel_idx = st.selectbox(
                 "출고할 재고 선택 (소비기한순)", 
                 opts.index, 
-                format_func=lambda i: opts[i],
-                help="필터를 활용하면 원하는 품목을 더 쉽게 찾을 수 있습니다."
+                format_func=lambda i: opts[i]
             )
             row = t_df.loc[sel_idx]
 
@@ -233,16 +209,16 @@ if not df.empty:
                             
                             if target_row != -1:
                                 out_data = [
-                                    str(manager),               # D
-                                    str(client_name),           # E
-                                    str(row['품명']),            # F
-                                    str(row['브랜드']),           # G
-                                    str(row.get('BL넘버','-')),  # H
-                                    int(qty),                   # I
-                                    str(row.get('창고명','')),    # J
-                                    int(price),                 # K
-                                    "이체" if is_trans else "",  # L
-                                    str(changes)                # M
+                                    str(manager),
+                                    str(client_name),
+                                    str(row['품명']),
+                                    str(row['브랜드']),
+                                    str(row.get('BL넘버','-')),
+                                    int(qty),
+                                    str(row.get('창고명','')),
+                                    int(price),
+                                    "이체" if is_trans else "",
+                                    str(changes)
                                 ]
                                 out_sh.update(range_name=f"D{target_row}:M{target_row}", values=[out_data], value_input_option='USER_ENTERED')
                                 st.success(f"✅ {target_date} 출고 등록 완료! ({target_row}행)")
